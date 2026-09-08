@@ -376,8 +376,14 @@ class FingerprintBackfillTests(unittest.TestCase):
         Nine identical renders is a placeholder; eight is the largest run of
         genuinely identical artwork the catalogue is allowed to contain, and
         discarding it would silently delete real coverage.
+
+        The boundary is pinned as a literal, not read back off the constant:
+        deriving `count` from `PLACEHOLDER_REPEATS` would keep this test green
+        for any value of the constant, when its entire point is to prove where
+        the line sits today.
         """
-        count = fingerprint_backfill.PLACEHOLDER_REPEATS
+        self.assertEqual(fingerprint_backfill.PLACEHOLDER_REPEATS, 8)
+        count = 8
         shared = _png(77)
         responses = {}
         for i in range(count):
@@ -476,6 +482,69 @@ class FingerprintBackfillTests(unittest.TestCase):
         self.assertLess(
             len(attempted), fingerprint_backfill.BREAKER_MIN_ATTEMPTS * 2
         )
+
+    def test_a_403_wave_is_retried_counts_as_failure_and_leaves_provenance_null(self):
+        """End to end, through the real download_image/ABSENT_STATUSES path.
+
+        Every other run_backfill test in this file replaces download_image
+        with a Download double, so none of them would have caught 401/403
+        being misfiled into ABSENT_STATUSES. This one drives the real HTTP
+        status classification: a 403 must be retried rather than accepted on
+        the first try, must count against the circuit breaker exactly like any
+        other unreachable CDN, and must leave `image_phash_source` untouched
+        rather than caching a false negative that removes the row from the
+        queue.
+        """
+        total = fingerprint_backfill.BREAKER_MIN_ATTEMPTS * 3
+        for i in range(total):
+            self._add(f"sv1-{i:03d}_en")
+
+        class Forbidden:
+            status_code = 403
+            content = b""
+            headers = {}
+
+        call_counts: dict[str, int] = {}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def get(self, url, timeout=None):
+                call_counts[url] = call_counts.get(url, 0) + 1
+                return Forbidden()
+
+        with patch.object(fingerprint_backfill.httpx, "Client", FakeClient), \
+                patch.object(fingerprint_backfill, "time", _VirtualTime()):
+            result = fingerprint_backfill.run_backfill(
+                self.db, rps=1000, workers=1, shuffle=False,
+            )
+
+        self.assertTrue(call_counts, "no download was attempted at all")
+        for url, calls in call_counts.items():
+            self.assertEqual(calls, 4, f"{url} was not retried through a 403")
+
+        # Counts as a failure: an all-403 batch trips the same circuit breaker
+        # a dead CDN does, rather than sailing through as "answered".
+        self.assertTrue(result["stopped_early"])
+        self.assertIn("failure rate", result["stopped_early"])
+
+        # Leaves provenance NULL: nothing here may be cached as a definite
+        # negative answer about the URL.
+        self.assertEqual(result["stored"], 0)
+        for i in range(total):
+            card = self._card(f"sv1-{i:03d}_en")
+            self.assertIsNone(card.image_phash)
+            self.assertIsNone(
+                card.image_phash_source,
+                "a 403 must not be written to image_phash_source",
+            )
 
     def test_a_healthy_run_is_never_cut_short_by_the_breaker(self):
         total = fingerprint_backfill.BREAKER_MIN_ATTEMPTS * 2
@@ -599,18 +668,38 @@ class FingerprintBackfillTests(unittest.TestCase):
         return result, calls
 
     def test_every_status_that_means_gone_is_treated_as_gone(self):
-        """404 is not the only definite "no". A permissions or bad-request
+        """404 is not the only definite "no". A bad-request or "resource
 
-        answer from the CDN is equally never going to become an image, and
-        retrying it four times an hour forever is pure noise. Each of these is
-        also licence to clear a stale fingerprint in a refresh, so narrowing the
-        set silently changes what may be deleted.
+        permanently removed" answer from the CDN is equally never going to
+        become an image, and retrying it four times an hour forever is pure
+        noise. Each of these is also licence to clear a stale fingerprint in a
+        refresh, so narrowing the set silently changes what may be deleted.
+
+        401/403 are deliberately NOT in this set -- see the next test. Unlike
+        a 404/410, they are a statement about the request (WAF, bot detection,
+        hotlink protection, edge rate limiting), not about the URL.
         """
-        for status in (400, 401, 403, 404, 410):
+        for status in (400, 404, 410):
             with self.subTest(status=status):
                 result, calls = self._download([self._response(status)])
                 self.assertTrue(result.absent, f"{status} should mean absent")
                 self.assertEqual(len(calls), 1, "a definite answer is not retried")
+
+    def test_401_and_403_are_treated_as_transient_not_gone(self):
+        """A 401/403 from a CDN is a server-side condition, not a fact about
+
+        the artwork URL. Treating it as permanent used to write
+        `image_phash_source = url` on the non-refresh path (so the row fell
+        out of `stale_fingerprint_filter()` and never re-entered the queue),
+        clear `image_phash` on refresh, and count as `failure=False` so a
+        catalogue-wide 403 wave could never trip the circuit breaker.
+        """
+        for status in (401, 403):
+            with self.subTest(status=status):
+                result, calls = self._download([self._response(status)] * 4, attempts=4)
+                self.assertFalse(result.absent, f"{status} should not mean absent")
+                self.assertIsNone(result.content)
+                self.assertEqual(len(calls), 4, "a transient status is retried")
 
     def test_a_server_error_is_retried_and_never_reported_as_gone(self):
         result, calls = self._download([self._response(500)], attempts=3)

@@ -61,7 +61,19 @@ MAX_FLUSH_SECONDS = 60.0
 
 # Statuses that mean "this image will not appear later", as opposed to a
 # transient failure. Only these are allowed to clear an existing fingerprint.
-ABSENT_STATUSES = {400, 401, 403, 404, 410}
+#
+# 401/403 are deliberately excluded. Unlike a 404 or 410, an auth/forbidden
+# response is a statement about *this request* (WAF, bot detection, hotlink
+# protection, edge rate limiting) rather than about the URL, and treating it as
+# permanent had three real consequences: the non-refresh path recorded
+# `image_phash_source = url`, so the row stopped matching
+# `stale_fingerprint_filter()` and never re-entered the queue; refresh mode
+# actively cleared `image_phash`, so one 403 wave deleted stored fingerprints;
+# and the outcome counted as `failure=False`, so a catalogue-wide 403 wave
+# could not trip the circuit breaker and coverage silently stalled. 429 is
+# already outside this set and correctly falls through to the retry/backoff
+# path below.
+ABSENT_STATUSES = {400, 404, 410}
 
 # A CDN that answers with a generic "image unavailable" render returns the very
 # same bytes for every card that hits it. Those cards would all get one
