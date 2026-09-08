@@ -596,22 +596,35 @@ class SearchTests(unittest.TestCase):
         # Clear margin, but nothing is actually similar.
         self.assertFalse(is_confident([(0, 30), (1, 60)]))
 
+    def test_the_tuned_constants_have_not_drifted(self):
+        """Pin the module's tuned constants to literals, not just each other.
+
+        A test that reads its expected value back off `card_fingerprint.X`
+        stays green no matter what `X` is changed to -- it is testing that the
+        module agrees with itself, not that the tuned value survived. An
+        independent mutation run showed MIN_MARGIN 5 -> 3 survives the whole
+        suite, and it drops confident precision from 99.0% to 96.5% (see the
+        module-level comment above MIN_MARGIN for the full sweep).
+        """
+        self.assertEqual(card_fingerprint.MIN_MARGIN, 5)
+        self.assertEqual(MAX_DISTANCE, 12)
+
     def test_the_margin_boundary_is_inclusive(self):
-        """MIN_MARGIN is the smallest margin that counts, not the first that fails.
+        """5 is the smallest margin that counts, not the first that fails.
 
         The sweep behind it reads "MIN_MARGIN 5 -> 15.6% confident at 99.0%
         precision", and those figures were measured with a margin of exactly 5
         accepted. Excluding it silently moves the operating point to the
-        MIN_MARGIN=6 row and quietly drops confident answers.
+        MIN_MARGIN=6 row and quietly drops confident answers. The boundary
+        itself is a literal, not `card_fingerprint.MIN_MARGIN`, so a change to
+        the constant fails this test instead of silently moving it.
         """
-        margin = card_fingerprint.MIN_MARGIN
-        self.assertTrue(is_confident([(0, 2), (1, 2 + margin)]))
-        self.assertFalse(is_confident([(0, 2), (1, 2 + margin - 1)]))
+        self.assertTrue(is_confident([(0, 2), (1, 7)]))
+        self.assertFalse(is_confident([(0, 2), (1, 6)]))
 
     def test_the_distance_boundary_is_inclusive(self):
-        limit = MAX_DISTANCE
-        self.assertTrue(is_confident([(0, limit), (1, limit + 40)]))
-        self.assertFalse(is_confident([(0, limit + 1), (1, limit + 41)]))
+        self.assertTrue(is_confident([(0, 12), (1, 52)]))
+        self.assertFalse(is_confident([(0, 13), (1, 53)]))
 
     def test_a_match_in_the_noise_floor_is_never_confident(self):
         """The distance bound has to bind somewhere useful.
