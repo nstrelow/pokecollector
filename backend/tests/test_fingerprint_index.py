@@ -170,44 +170,76 @@ class FingerprintIndexTests(unittest.TestCase):
         loads with no lock, so a read interleaved with a rebuild could return
         one row's hash with another row's identity -- or index past the end of
         the shorter list and 500.
+
+        Uses a file-backed database and one real connection per thread, like
+        CommitVisibilityTests below -- not `self.engine`, whose StaticPool
+        gives every session in this class the *same* underlying SQLite
+        connection. Sharing one connection across the writer and four reader
+        threads serialises them onto unsynchronised transaction state, so the
+        test could raise `OperationalError` instead of ever exercising a real
+        snapshot mismatch.
         """
-        for i in range(30):
-            self._card(f"sv1-{i:03d}_en")
-        self.db.commit()
-
-        snapshot = fingerprint_index.get(self.db)
-        self.assertEqual(snapshot.packed.shape[0], len(snapshot.rows))
-
-        stop = threading.Event()
-        mismatches = []
-
-        def read_forever():
-            # A Session is not thread safe; each reader gets its own, as each
-            # request does in the app.
-            session = self.Session()
-            try:
-                while not stop.is_set():
-                    taken = fingerprint_index.get(session)
-                    if taken.packed.shape[0] != len(taken.rows):
-                        mismatches.append(taken)
-                    for row_index, _ in enumerate(taken.rows):
-                        taken.rows[row_index]["id"]
-            finally:
-                session.close()
-
-        readers = [threading.Thread(target=read_forever) for _ in range(4)]
-        for reader in readers:
-            reader.start()
+        tmpdir = tempfile.mkdtemp()
         try:
-            for i in range(30, 60):
-                self._card(f"sv1-{i:03d}_en")
-                self.db.commit()
-                fingerprint_index.invalidate()
-        finally:
-            stop.set()
+            engine = create_engine("sqlite:///" + os.path.join(tmpdir, "snapshot.db"))
+            Base.metadata.create_all(engine)
+            Session = sessionmaker(bind=engine)
+            db = Session()
+            db.add_all([
+                Setting(key="tcgdex_sync_languages", value="en,de"),
+                Setting(key="tcgdex_digital_sets_enabled", value="false"),
+            ])
+            for i in range(30):
+                db.add(Card(
+                    id=f"sv1-{i:03d}_en", tcg_card_id=f"sv1-{i:03d}", name=f"sv1-{i:03d}_en",
+                    number="1", set_id="sv1", lang="en", is_custom=False, is_digital=False,
+                    images_small=f"https://example.invalid/sv1-{i:03d}_en.png",
+                    image_phash=_hash(i),
+                ))
+            db.commit()
+
+            snapshot = fingerprint_index.get(db)
+            self.assertEqual(snapshot.packed.shape[0], len(snapshot.rows))
+
+            stop = threading.Event()
+            mismatches = []
+
+            def read_forever():
+                # A Session is not thread safe; each reader gets its own
+                # connection, as each request does in the app.
+                session = Session()
+                try:
+                    while not stop.is_set():
+                        taken = fingerprint_index.get(session)
+                        if taken.packed.shape[0] != len(taken.rows):
+                            mismatches.append(taken)
+                        for row_index, _ in enumerate(taken.rows):
+                            taken.rows[row_index]["id"]
+                finally:
+                    session.close()
+
+            readers = [threading.Thread(target=read_forever) for _ in range(4)]
             for reader in readers:
-                reader.join()
-        self.assertEqual(mismatches, [])
+                reader.start()
+            try:
+                for i in range(30, 60):
+                    db.add(Card(
+                        id=f"sv1-{i:03d}_en", tcg_card_id=f"sv1-{i:03d}", name=f"sv1-{i:03d}_en",
+                        number="1", set_id="sv1", lang="en", is_custom=False, is_digital=False,
+                        images_small=f"https://example.invalid/sv1-{i:03d}_en.png",
+                        image_phash=_hash(i),
+                    ))
+                    db.commit()
+                    fingerprint_index.invalidate()
+            finally:
+                stop.set()
+                for reader in readers:
+                    reader.join()
+            self.assertEqual(mismatches, [])
+            db.close()
+            engine.dispose()
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     def test_a_snapshot_is_not_mutated_after_it_is_handed_out(self):
         self._card("first_en")
@@ -278,6 +310,18 @@ class FingerprintIndexTests(unittest.TestCase):
             other_process.close()
 
         self.assertEqual(len(fingerprint_index.get(self.db).rows), 2)
+
+    def test_the_version_setting_key_has_not_drifted(self):
+        """Pinned to a literal so a rename is a deliberate, visible change.
+
+        Every test below writes `Setting(key=fingerprint_index.VERSION_SETTING_KEY, ...)`
+        to simulate a genuinely separate process, which is correct -- they have
+        to use whatever key the module actually reads. This is the one place
+        that pins the key itself, so a change to it cannot pass silently.
+        """
+        self.assertEqual(
+            fingerprint_index.VERSION_SETTING_KEY, "fingerprint_index_version"
+        )
 
     def test_the_database_marker_alone_forces_a_rebuild(self):
         """The cross-process half, tested without the process-local half.
@@ -441,7 +485,7 @@ class FingerprintIndexTests(unittest.TestCase):
 
     def test_readiness_is_a_coverage_rule_not_just_a_non_empty_index(self):
         """/status and the scan endpoint must agree on what "ready" means."""
-        for i in range(fingerprint_index.READY_MIN_CARDS + 100):
+        for i in range(600):
             self._card(f"sv1-{i:05d}_en", image_phash=None)
         self.db.commit()
         self.assertFalse(fingerprint_index.coverage(self.db)["ready"])
@@ -462,6 +506,64 @@ class FingerprintIndexTests(unittest.TestCase):
         fingerprint_index.reset()
         self.assertTrue(fingerprint_index.get(self.db).ready)
         self.assertTrue(fingerprint_index.coverage(self.db)["ready"])
+
+    def test_the_readiness_thresholds_have_not_drifted(self):
+        """Pin READY_MIN_CARDS and READY_COVERAGE to literals, not each other.
+
+        A fixture that derives its card count from `READY_MIN_CARDS` (as the
+        test above used to) stays green no matter what the constant is
+        changed to -- it tests that coverage() agrees with the module, not
+        that the tuned threshold survived. Both boundaries are exercised here
+        with literal counts instead.
+        """
+        self.assertEqual(fingerprint_index.READY_MIN_CARDS, 500)
+        self.assertEqual(fingerprint_index.READY_COVERAGE, 0.5)
+
+        # One below READY_MIN_CARDS, fully hashed: coverage is perfect but
+        # there still are not enough cards to trust it.
+        for i in range(499):
+            self._card(f"sv1-{i:05d}_en", image_phash=_hash(i))
+        self.db.commit()
+        stats = fingerprint_index.coverage(self.db)
+        self.assertEqual(stats["cards_total"], 499)
+        self.assertEqual(stats["coverage"], 1.0)
+        self.assertFalse(stats["ready"])
+
+        # Exactly READY_MIN_CARDS, still fully hashed: now ready.
+        self._card("sv1-00499_en", image_phash=_hash(499))
+        self.db.commit()
+        stats = fingerprint_index.coverage(self.db)
+        self.assertEqual(stats["cards_total"], 500)
+        self.assertTrue(stats["ready"])
+
+        # Isolate the coverage boundary at a card count well above
+        # READY_MIN_CARDS, so only the fraction crosses 0.5, not the count:
+        # 1200 cards, 600 hashed is exactly 0.5.
+        for i in range(500, 1200):
+            self._card(f"sv1-{i:05d}_en", image_phash=None)
+        self.db.commit()
+        self.db.query(Card).update({"image_phash": None})
+        self.db.query(Card).filter(Card.id < "sv1-00600_en").update(
+            {"image_phash": _hash(1)}
+        )
+        self.db.commit()
+        stats = fingerprint_index.coverage(self.db)
+        self.assertEqual(stats["cards_total"], 1200)
+        self.assertEqual(stats["coverage"], 0.5)
+        self.assertTrue(stats["ready"])
+
+        # One hash short of that boundary: not ready, even though the
+        # fingerprinted count (599) is still comfortably above READY_MIN_CARDS.
+        self.db.query(Card).filter(Card.id == "sv1-00599_en").update(
+            {"image_phash": None}
+        )
+        self.db.commit()
+        stats = fingerprint_index.coverage(self.db)
+        self.assertLess(stats["coverage"], 0.5)
+        self.assertGreaterEqual(
+            stats["cards_fingerprinted"], fingerprint_index.READY_MIN_CARDS
+        )
+        self.assertFalse(stats["ready"])
 
     # --- concurrency --------------------------------------------------------
 
