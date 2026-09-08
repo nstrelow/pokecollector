@@ -36,6 +36,15 @@ def invalidate_fingerprint_index_after_commit(db: Session) -> None:
 
     @event.listens_for(db, "after_commit")
     def _flush(session):  # pragma: no cover - exercised via upsert_card tests
+        # `after_commit` also fires when a SAVEPOINT commits (`begin_nested()`
+        # exiting normally), and `in_nested_transaction()` is still true at
+        # that point -- measured against the installed SQLAlchemy. Popping the
+        # flag there invalidates before the enclosing transaction's writes are
+        # actually visible to other sessions, and the real outer commit is
+        # then left with no signal at all. Only depth 0 may flush, mirroring
+        # the same guard `_drop` already needs for `after_rollback`.
+        if session.in_nested_transaction():
+            return
         if session.info.pop("fingerprint_index_dirty", False):
             fingerprint_index.invalidate()
 

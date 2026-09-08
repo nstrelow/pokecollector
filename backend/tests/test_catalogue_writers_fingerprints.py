@@ -28,6 +28,7 @@ try:
     from database import Base, get_db
     from models import Card, CustomCardMatch, Set, Setting, User
     from services import fingerprint_backfill, fingerprint_index
+    from services.card_upsert import invalidate_fingerprint_index_after_commit
 
     DEPS_AVAILABLE = True
 except ModuleNotFoundError:
@@ -205,6 +206,42 @@ class CatalogueWriterFingerprintTests(unittest.TestCase):
             "the savepoint rollback inside the endpoint swallowed the invalidation",
         )
         client.close()
+
+    def test_invalidation_waits_for_the_outer_commit_across_a_savepoint(self):
+        """`after_commit` also fires when a SAVEPOINT commits.
+
+        `migrate_custom_card` sets the dirty flag via `apply_catalogue_fields`
+        and only later opens `db.begin_nested()` for an unrelated re-assignment.
+        If the `after_commit` handler flushed at that inner SAVEPOINT commit
+        (`in_nested_transaction()` is still true there), a rebuild racing the
+        real outer commit would cache pre-commit data and stay stale for
+        MAX_AGE_SECONDS. Invalidation must happen exactly once, and only once
+        the outer transaction actually commits.
+        """
+        before = fingerprint_index._generation
+
+        # Mirrors api/cards.py's migrate_custom_card: the helper call that
+        # marks the session dirty happens strictly before the begin_nested()
+        # block, in the same outer transaction.
+        invalidate_fingerprint_index_after_commit(self.db)
+        self.db.add(Card(
+            id="sv1-9_en", tcg_card_id="sv1-9", name="Placeholder", number="9",
+            set_id="sv1", lang="en", is_custom=False, is_digital=False,
+        ))
+
+        with self.db.begin_nested():
+            self.db.flush()
+        self.assertEqual(
+            fingerprint_index._generation, before,
+            "invalidation fired at the SAVEPOINT commit instead of waiting "
+            "for the outer transaction",
+        )
+
+        self.db.commit()
+        self.assertEqual(
+            fingerprint_index._generation, before + 1,
+            "invalidation should fire exactly once, at the outer commit",
+        )
 
     def test_the_custom_card_migration_tells_the_index_about_a_new_row(self):
         client, user = self._migration_client()
