@@ -10,11 +10,21 @@ scheduler = BackgroundScheduler()
 _DEFAULT_FULL_SYNC_DAYS = 5
 _DEFAULT_PRICE_SYNC_MINUTES = 30
 
-# Offline-recognition fingerprints. At 5 req/s a 2,000-card batch takes ~7
-# minutes of CDN time, and an hourly run clears a 45k catalogue in a day.
+# Offline-recognition fingerprints. At 5 req/s a 2,000-card batch is ~7 minutes
+# of CDN time IF every download succeeds on the first attempt. It does not
+# follow that a 45k catalogue clears in a day: `download_image` retries 4 times
+# at a 30s timeout with 1+2+4s of backoff, so a card that is simply unreachable
+# costs up to ~127s, and 2,000 of those over 4 workers is 17.6 hours. That is
+# why the run has a wall-clock budget as well as a row limit -- and why an
+# honest estimate is "a healthy catalogue clears in about a day, a sick one
+# takes as long as it takes, a budget-limited batch at a time".
+#
+# The budget is well under the hour between runs, so max_instances=1 and
+# coalesce=True can no longer silently swallow a queue of skipped runs.
 _FINGERPRINT_BATCH_LIMIT = 2000
 _FINGERPRINT_RPS = 5.0
 _FINGERPRINT_INTERVAL_HOURS = 1
+_FINGERPRINT_TIME_BUDGET_SECONDS = 40 * 60.0
 
 
 def _get_full_sync_interval_days() -> int:
@@ -165,11 +175,16 @@ def run_pokedex_metadata_backfill():
 def run_fingerprint_backfill():
     """Keep cards.image_phash populated as the catalogue changes.
 
-    Without this, offline recognition coverage only ever decays: upsert_card
-    clears the fingerprint when a card's artwork URL rotates and never
-    recomputes it, and a newly synced card has none at all. This job picks up
-    whatever is outstanding, a bounded batch at a time, paced politely against
-    TCGdex.
+    Without this, offline recognition coverage only ever decays: a newly synced
+    card has no fingerprint at all, and a card whose artwork URL rotates has its
+    old one dropped. This job picks up whatever is outstanding -- including rows
+    whose stored fingerprint no longer matches their current artwork URL, which
+    is how a writer that forgot to clear one gets repaired -- a bounded batch at
+    a time, paced politely against TCGdex.
+
+    Bounded by rows AND by wall clock, and it gives up early if the CDN is
+    plainly not answering. The run must finish inside the scheduler's interval
+    or coalesce=True quietly discards the runs it overlapped.
     """
     from database import SessionLocal
     from services.fingerprint_backfill import run_backfill
@@ -180,13 +195,15 @@ def run_fingerprint_backfill():
             db,
             limit=_FINGERPRINT_BATCH_LIMIT,
             rps=_FINGERPRINT_RPS,
+            time_budget=_FINGERPRINT_TIME_BUDGET_SECONDS,
         )
         if result["considered"]:
             logger.info(
-                "Fingerprint backfill: considered=%s stored=%s skipped=%s "
-                "cleared=%s placeholders=%s",
-                result["considered"], result["stored"], result["skipped"],
-                result["cleared"], result["placeholders"],
+                "Fingerprint backfill: considered=%s attempted=%s stored=%s "
+                "skipped=%s cleared=%s placeholders=%s stopped_early=%s",
+                result["considered"], result["attempted"], result["stored"],
+                result["skipped"], result["cleared"], result["placeholders"],
+                result["stopped_early"],
             )
     except Exception as e:
         logger.error("Fingerprint backfill failed: %s", e)

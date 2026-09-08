@@ -36,11 +36,18 @@ def main() -> int:
                         help="requests per second against the image CDN")
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     parser.add_argument("--limit", type=int, default=0, help="stop after N cards")
+    parser.add_argument("--time-budget", type=float, default=0.0,
+                        help="stop after N seconds (0 = no limit)")
+    parser.add_argument("--in-order", action="store_true",
+                        help="walk the queue by card id instead of at random; "
+                             "reproducible, but a block of always-failing cards "
+                             "will hold up everything behind it")
     parser.add_argument("--refresh", action="store_true",
-                        help="recompute fingerprints that already exist; a card "
-                             "whose image is definitively gone (404/410) has its "
-                             "stale fingerprint removed, while an unreachable CDN "
-                             "leaves it untouched")
+                        help="recompute fingerprints that already exist, and "
+                             "retry cards previously recorded as permanently "
+                             "unusable; a card whose image is definitively gone "
+                             "(404/410) has its stale fingerprint removed, while "
+                             "an unreachable CDN leaves it untouched")
     args = parser.parse_args()
 
     db = SessionLocal()
@@ -58,17 +65,23 @@ def main() -> int:
             limit=args.limit,
             rps=args.rps,
             workers=args.workers,
+            time_budget=args.time_budget or float("inf"),
+            shuffle=not args.in_order,
             on_progress=progress,
         )
         if not result["considered"]:
-            print("Nothing to do -- every card with an image already has a "
-                  "fingerprint.")
+            print("Nothing to do -- every card with an image has either been "
+                  "fingerprinted or already tried. Use --refresh to retry.")
             return 0
 
         print(f"\nDone. {result['stored']} fingerprinted, "
               f"{result['skipped']} had no usable image, "
               f"{result['cleared']} stale fingerprints removed, "
               f"{result['placeholders']} discarded as CDN placeholders.")
+        if result["stopped_early"]:
+            print(f"Stopped early: {result['stopped_early']}. "
+                  f"{result['attempted']} of {result['considered']} attempted; "
+                  f"run again to continue.")
 
         stats = fingerprint_index.coverage(db)
         print("\nOffline recognition coverage:")
