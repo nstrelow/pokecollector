@@ -197,16 +197,22 @@ def run_fingerprint_backfill():
             rps=_FINGERPRINT_RPS,
             time_budget=_FINGERPRINT_TIME_BUDGET_SECONDS,
         )
-        if result["considered"]:
-            logger.info(
-                "Fingerprint backfill: considered=%s attempted=%s stored=%s "
-                "skipped=%s cleared=%s placeholders=%s stopped_early=%s",
-                result["considered"], result["attempted"], result["stored"],
-                result["skipped"], result["cleared"], result["placeholders"],
-                result["stopped_early"],
-            )
-    except Exception as e:
-        logger.error("Fingerprint backfill failed: %s", e)
+        # Always logged, even when `considered` is 0. A catalogue-wide outage
+        # (e.g. a CDN 403 wave) can make `pending_cards()` legitimately return
+        # nothing every run -- every row already carries a negative-cache
+        # provenance -- and that must not look identical in the logs to a
+        # healthy, fully-covered catalogue idling. Suppressing this line
+        # whenever there was nothing to do is exactly what made a wiped queue
+        # silent.
+        logger.info(
+            "Fingerprint backfill: considered=%s attempted=%s stored=%s "
+            "skipped=%s cleared=%s placeholders=%s stopped_early=%s",
+            result["considered"], result["attempted"], result["stored"],
+            result["skipped"], result["cleared"], result["placeholders"],
+            result["stopped_early"],
+        )
+    except Exception:
+        logger.exception("Fingerprint backfill failed")
     finally:
         db.close()
 
