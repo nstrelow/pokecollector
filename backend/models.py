@@ -72,6 +72,9 @@ class Card(Base):
     playable_fingerprint = Column(String)
     images_small = Column(String)
     images_large = Column(String)
+    # 64-bit perceptual hash of the card artwork, for offline recognition.
+    # Populated at sync time; NULL until backfilled or if the image is missing.
+    image_phash = Column(LargeBinary, nullable=True)
     image_source_lang = Column(String, nullable=True)  # Set when images are copied from another TCGdex language
     data_source_lang = Column(String, nullable=True)   # Set when metadata is copied from another TCGdex language
     custom_image_url = Column(String, nullable=True)   # Manual temporary fallback while TCGdex has no image

@@ -7,6 +7,7 @@ import datetime
 from sqlalchemy.orm import Session
 
 from models import Card, ImageCache, Set
+from services import fingerprint_index
 from services.price_utils import preserve_existing_prices_for_invalid_update
 
 
@@ -30,6 +31,12 @@ def upsert_card(db: Session, card_data: dict) -> Card:
     preserve_existing_prices_for_invalid_update(card_data, existing)
     has_api_image = bool(card_data.get("images_small") or card_data.get("images_large"))
     if existing:
+        # A changed artwork URL invalidates the stored fingerprint. card_data
+        # never carries image_phash, so without this the old hash would silently
+        # survive and point at the previous picture.
+        new_image = card_data.get("images_small")
+        if existing.image_phash is not None and new_image != existing.images_small:
+            existing.image_phash = None
         for key, value in card_data.items():
             if key != "id":
                 setattr(existing, key, value)
@@ -42,4 +49,6 @@ def upsert_card(db: Session, card_data: dict) -> Card:
     else:
         existing = Card(**card_data)
         db.add(existing)
+    # The in-memory fingerprint index no longer reflects the catalogue.
+    fingerprint_index.invalidate()
     return existing

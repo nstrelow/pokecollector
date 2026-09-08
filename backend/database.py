@@ -75,6 +75,8 @@ def _run_migrations(conn):
         "ALTER TABLE cards ADD COLUMN IF NOT EXISTS is_custom BOOLEAN DEFAULT FALSE",
         "ALTER TABLE sets ADD COLUMN IF NOT EXISTS is_digital BOOLEAN DEFAULT FALSE",
         "ALTER TABLE cards ADD COLUMN IF NOT EXISTS is_digital BOOLEAN DEFAULT FALSE",
+        # Perceptual hash of the card artwork, used for offline recognition.
+        "ALTER TABLE cards ADD COLUMN IF NOT EXISTS image_phash BYTEA",
         # Create custom_card_matches table if it doesn't exist (handled by create_all, belt+suspenders)
         """CREATE TABLE IF NOT EXISTS custom_card_matches (
             id SERIAL PRIMARY KEY,
