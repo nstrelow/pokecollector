@@ -10,6 +10,12 @@ scheduler = BackgroundScheduler()
 _DEFAULT_FULL_SYNC_DAYS = 5
 _DEFAULT_PRICE_SYNC_MINUTES = 30
 
+# Offline-recognition fingerprints. At 5 req/s a 2,000-card batch takes ~7
+# minutes of CDN time, and an hourly run clears a 45k catalogue in a day.
+_FINGERPRINT_BATCH_LIMIT = 2000
+_FINGERPRINT_RPS = 5.0
+_FINGERPRINT_INTERVAL_HOURS = 1
+
 
 def _get_full_sync_interval_days() -> int:
     """Read full sync interval from DB settings."""
@@ -156,6 +162,38 @@ def run_pokedex_metadata_backfill():
         db.close()
 
 
+def run_fingerprint_backfill():
+    """Keep cards.image_phash populated as the catalogue changes.
+
+    Without this, offline recognition coverage only ever decays: upsert_card
+    clears the fingerprint when a card's artwork URL rotates and never
+    recomputes it, and a newly synced card has none at all. This job picks up
+    whatever is outstanding, a bounded batch at a time, paced politely against
+    TCGdex.
+    """
+    from database import SessionLocal
+    from services.fingerprint_backfill import run_backfill
+
+    db = SessionLocal()
+    try:
+        result = run_backfill(
+            db,
+            limit=_FINGERPRINT_BATCH_LIMIT,
+            rps=_FINGERPRINT_RPS,
+        )
+        if result["considered"]:
+            logger.info(
+                "Fingerprint backfill: considered=%s stored=%s skipped=%s "
+                "cleared=%s placeholders=%s",
+                result["considered"], result["stored"], result["skipped"],
+                result["cleared"], result["placeholders"],
+            )
+    except Exception as e:
+        logger.error("Fingerprint backfill failed: %s", e)
+    finally:
+        db.close()
+
+
 # Keep legacy alias
 def run_sync():
     """Legacy alias for run_full_sync."""
@@ -214,6 +252,19 @@ def start_scheduler():
             name="Persistent Scan Queue",
             replace_existing=True,
             next_run_time=now_utc + datetime.timedelta(seconds=45),
+        )
+
+        # Deliberately not at startup: this downloads images, so it must not sit
+        # in front of the app becoming available.
+        scheduler.add_job(
+            run_fingerprint_backfill,
+            trigger=IntervalTrigger(hours=_FINGERPRINT_INTERVAL_HOURS),
+            id="fingerprint_backfill_job",
+            name="Card Image Fingerprints",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            next_run_time=now_utc + datetime.timedelta(minutes=10),
         )
 
         if needs_pokedex_backfill:
