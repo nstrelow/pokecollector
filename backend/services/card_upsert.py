@@ -4,11 +4,36 @@ from __future__ import annotations
 
 import datetime
 
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from models import Card, ImageCache, Set
 from services import fingerprint_index
 from services.price_utils import preserve_existing_prices_for_invalid_update
+
+
+def invalidate_fingerprint_index_after_commit(db: Session) -> None:
+    """Drop the in-memory fingerprint index once this session's work lands.
+
+    Invalidating immediately is not enough: a rebuild triggered by a concurrent
+    request can read the cards table between the invalidation and the commit,
+    clear the flag, and cache a snapshot that is already out of date. Deferring
+    to after_commit means the index is only marked stale once the new rows are
+    actually visible to other sessions.
+    """
+    db.info["fingerprint_index_dirty"] = True
+    if db.info.get("fingerprint_index_hooked"):
+        return
+    db.info["fingerprint_index_hooked"] = True
+
+    @event.listens_for(db, "after_commit")
+    def _flush(session):  # pragma: no cover - exercised via upsert_card tests
+        if session.info.pop("fingerprint_index_dirty", False):
+            fingerprint_index.invalidate()
+
+    @event.listens_for(db, "after_rollback")
+    def _drop(session):  # pragma: no cover - exercised via upsert_card tests
+        session.info.pop("fingerprint_index_dirty", None)
 
 
 def _apply_set_digital_flag(db: Session, card_data: dict) -> None:
@@ -50,5 +75,5 @@ def upsert_card(db: Session, card_data: dict) -> Card:
         existing = Card(**card_data)
         db.add(existing)
     # The in-memory fingerprint index no longer reflects the catalogue.
-    fingerprint_index.invalidate()
+    invalidate_fingerprint_index_after_commit(db)
     return existing

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import CollectionCardPhoto, Setting, UserSetting, User
 from services.debug_logging import configure_debug_logging, get_debug_log_path
+from services.card_upsert import invalidate_fingerprint_index_after_commit
 from services.digital_sets import DIGITAL_SETS_SETTING_KEY, refresh_digital_catalogue_flags
 from services.exchange_rates import (
     ExchangeRateError,
@@ -211,6 +212,11 @@ def _apply_setting_side_effect(db: Session, key: str, value: str) -> None:
             result["sets_marked"],
             result["cards_marked"],
         )
+    if key in {"tcgdex_sync_languages", DIGITAL_SETS_SETTING_KEY}:
+        # These decide which cards may be in the offline recognition index at
+        # all. Nothing else tells it they moved, so without this a language
+        # turned off stays matchable until the index ages out.
+        invalidate_fingerprint_index_after_commit(db)
 
 
 def _is_admin(db: Session, user_id: int) -> bool:

@@ -166,6 +166,29 @@ def visible_any_card_filter(db: Session, user_id: int, requested_lang: str | Non
     )
 
 
+def indexable_card_filter(db: Session):
+    """Predicate for catalogue cards eligible for the app-wide fingerprint index.
+
+    The offline recognition index is one process-wide structure shared by every
+    request, so it cannot use a per-user predicate. It therefore uses the
+    catalogue rule with app-wide pins -- the same shape as `visible_card_filter`
+    but with `get_pinned_set_language_pairs(user_id=None)`, exactly like
+    `sync_set_filter` does for sets.
+
+    Custom cards are excluded outright. They are per-user data (private cards,
+    other people's shared templates), and a shared index has no way to tell one
+    viewer from another, so they are never fingerprinted or indexed at all.
+    """
+    active_languages = set(get_configured_sync_languages(db))
+    pinned_pairs = get_pinned_set_language_pairs(db, user_id=None)
+    digital_clause = True if digital_sets_enabled(db) else Card.is_digital == False
+    return and_(
+        Card.is_custom == False,
+        or_(Card.lang.in_(active_languages), card_pair_filter(pinned_pairs)),
+        digital_clause,
+    )
+
+
 def sync_set_filter(db: Session):
     """Predicate for localized sets that full sync should maintain app-wide."""
     active_languages = set(get_configured_sync_languages(db))
