@@ -73,7 +73,10 @@ class Card(Base):
     images_small = Column(String)
     images_large = Column(String)
     # 64-bit perceptual hash of the card artwork, for offline recognition.
-    # Populated at sync time; NULL until backfilled or if the image is missing.
+    # Populated by the hourly fingerprint job (services/fingerprint_backfill.py)
+    # and by scripts/backfill_fingerprints.py; cleared by upsert_card when the
+    # artwork URL changes, and NULL until the job catches up or if there is no
+    # image. Custom cards are never fingerprinted.
     image_phash = Column(LargeBinary, nullable=True)
     image_source_lang = Column(String, nullable=True)  # Set when images are copied from another TCGdex language
     data_source_lang = Column(String, nullable=True)   # Set when metadata is copied from another TCGdex language

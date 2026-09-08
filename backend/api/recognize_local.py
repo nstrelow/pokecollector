@@ -7,14 +7,21 @@ what its TCGdex search is keyed on.
 
 This endpoint takes the other route. It matches the photo's fingerprint against
 the locally stored catalogue, needing no credential, no network, and no name.
-The response deliberately mirrors /recognize so the existing review UI can
-consume it unchanged.
+
+The response is shaped like /recognize's so a client can reuse the same review
+component, but nothing calls it yet: no frontend code references
+`recognize/local`. Wiring up the UI is a separate change.
+
+Everything here is CPU work -- decode, card detection, hash, scan -- and the
+production image runs a single uvicorn worker, so it is pushed onto the thread
+pool rather than run on the event loop.
 """
 from __future__ import annotations
 
 import logging
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
 from api.auth import get_current_user
@@ -23,6 +30,7 @@ from models import User
 from services import fingerprint_index
 from services.card_fingerprint import (
     MAX_DISTANCE,
+    SHORTLIST_MAX_DISTANCE,
     fingerprint_photo,
     is_confident,
     search,
@@ -50,6 +58,20 @@ def _confidence(distance: int) -> str:
     return "low"
 
 
+def _match_photo(raw: bytes, snapshot: fingerprint_index.Snapshot):
+    """Sanitize, fingerprint and rank one upload. Runs off the event loop."""
+    sanitized = sanitize_image_bytes(raw)
+    query = fingerprint_photo(sanitized.data)
+    if query is None:
+        return None
+    return search(
+        query,
+        snapshot.packed,
+        limit=SHORTLIST,
+        max_distance=SHORTLIST_MAX_DISTANCE,
+    )
+
+
 @router.post("/recognize/local")
 async def recognize_card_locally(
     file: UploadFile = File(...),
@@ -58,26 +80,29 @@ async def recognize_card_locally(
 ):
     try:
         raw = await read_limited_upload(file, remaining_job_bytes=MAX_FILE_BYTES)
-        sanitized = sanitize_image_bytes(raw)
     except ScanUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    packed, rows = fingerprint_index.get(db)
-    if not rows:
+    # A rebuild reads the whole cards table; never do that on the loop.
+    snapshot = await run_in_threadpool(fingerprint_index.get, db)
+    if not snapshot.rows:
         raise HTTPException(
             status_code=503,
             detail=(
-                "No card fingerprints are stored yet. Run "
-                "scripts/backfill_fingerprints.py to enable offline recognition."
+                "No card fingerprints are stored yet. Offline recognition "
+                "becomes available once the fingerprint job has run."
             ),
         )
 
-    query = fingerprint_photo(sanitized.data)
-    if query is None:
+    try:
+        ranked = await run_in_threadpool(_match_photo, raw, snapshot)
+    except ScanUploadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if ranked is None:
         raise HTTPException(status_code=400, detail="Could not read the uploaded image.")
 
-    ranked = search(query, packed, limit=SHORTLIST)
     confident = is_confident(ranked)
+    rows = snapshot.rows
 
     matches = []
     for row_index, distance in ranked:
@@ -110,7 +135,6 @@ async def recognize_card_locally(
         "_identity_confident": confident,
         "_identity_decision": "local_image" if confident else None,
         "_source": "local_fingerprint",
-        "_index_size": len(rows),
     }
 
 
