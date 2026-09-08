@@ -11,7 +11,7 @@ from models import Card, Set, CollectionItem, WishlistItem, BinderCard, PriceHis
 from services import pokemon_api, telegram
 from services.card_fallbacks import apply_cross_language_fallbacks, build_missing_language_cards_for_set
 from services.card_metadata import enrich_missing_card_metadata
-from services.card_upsert import upsert_card
+from services.card_upsert import invalidate_fingerprint_index_after_commit, upsert_card
 from services.card_visibility import card_pair_filter, get_configured_sync_languages, get_pinned_set_language_pairs, sync_set_filter
 from services.digital_sets import digital_sets_enabled, refresh_digital_catalogue_flags
 from services.card_values import effective_market_price, normalize_price_field
@@ -797,6 +797,11 @@ def _perform_full_sync_locked(db: Session) -> dict:
         include_digital = digital_sets_enabled(db)
         flag_result = refresh_digital_catalogue_flags(db)
         if flag_result["sets_marked"] or flag_result["cards_marked"]:
+            # is_digital decides whether a card may be in the offline
+            # recognition index at all (indexable_card_filter). api/settings.py
+            # invalidates when the setting is toggled; this bulk flip during
+            # sync moves the same cards and had no such signal.
+            invalidate_fingerprint_index_after_commit(db)
             db.commit()
             logger.info(
                 "Marked %s digital sets and %s digital cards before full sync",

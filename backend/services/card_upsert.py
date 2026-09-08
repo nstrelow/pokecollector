@@ -20,6 +20,14 @@ def invalidate_fingerprint_index_after_commit(db: Session) -> None:
     clear the flag, and cache a snapshot that is already out of date. Deferring
     to after_commit means the index is only marked stale once the new rows are
     actually visible to other sessions.
+
+    The flag is cleared only by a rollback that ends the whole transaction. A
+    SAVEPOINT rollback fires `after_rollback` too -- api/cards.py uses
+    `begin_nested()` around parts of the custom-card migration -- and clearing
+    it there dropped an invalidation for rows the enclosing transaction went on
+    to commit. Over-invalidating costs one rebuild; under-invalidating serves
+    the wrong card until MAX_AGE_SECONDS, so the nesting depth is tracked and
+    only depth 0 may clear.
     """
     db.info["fingerprint_index_dirty"] = True
     if db.info.get("fingerprint_index_hooked"):
@@ -33,7 +41,56 @@ def invalidate_fingerprint_index_after_commit(db: Session) -> None:
 
     @event.listens_for(db, "after_rollback")
     def _drop(session):  # pragma: no cover - exercised via upsert_card tests
+        # `after_rollback` also fires for `ROLLBACK TO SAVEPOINT`, where the
+        # outer transaction -- and the write that set the flag -- survives.
+        if session.in_nested_transaction():
+            return
         session.info.pop("fingerprint_index_dirty", None)
+
+
+def clear_stale_fingerprint(existing: Card, new_image: str | None) -> None:
+    """Drop `existing`'s fingerprint if `new_image` is not what it was made from.
+
+    Any writer that assigns a new `images_small` must call this, or it leaves a
+    hash of the previous picture in place. That is not a recoverable mistake on
+    its own: the backfill only looked at rows with a NULL hash, so a survivor
+    was never revisited and went on matching photos of the old artwork at
+    distance 0. `image_phash_source` is what makes it recoverable -- see
+    `fingerprint_backfill.pending_cards`, which re-queues any row whose stored
+    provenance no longer matches its URL even if this call is forgotten.
+    """
+    if existing.images_small == new_image:
+        return
+    existing.image_phash = None
+    existing.image_phash_source = None
+
+
+def apply_catalogue_fields(db: Session, existing: Card, parsed: dict) -> Card:
+    """Copy parsed TCGdex fields onto an existing catalogue row, safely.
+
+    Several call sites do their own field-by-field assignment instead of going
+    through `upsert_card` (which also does price preservation and custom-image
+    cleanup they do not want). They still change artwork URLs and still change
+    what the index should hold, so they share this instead of each remembering
+    two separate rules.
+    """
+    clear_stale_fingerprint(existing, parsed.get("images_small"))
+    for key, value in parsed.items():
+        if key != "id":
+            setattr(existing, key, value)
+    invalidate_fingerprint_index_after_commit(db)
+    return existing
+
+
+def add_catalogue_card(db: Session, card: Card) -> Card:
+    """Insert a new catalogue row and tell the index it exists.
+
+    A new row carries no stale hash, but the index will not contain it until it
+    is rebuilt, so an insert is an invalidation just as much as an update is.
+    """
+    db.add(card)
+    invalidate_fingerprint_index_after_commit(db)
+    return card
 
 
 def _apply_set_digital_flag(db: Session, card_data: dict) -> None:
@@ -59,9 +116,7 @@ def upsert_card(db: Session, card_data: dict) -> Card:
         # A changed artwork URL invalidates the stored fingerprint. card_data
         # never carries image_phash, so without this the old hash would silently
         # survive and point at the previous picture.
-        new_image = card_data.get("images_small")
-        if existing.image_phash is not None and new_image != existing.images_small:
-            existing.image_phash = None
+        clear_stale_fingerprint(existing, card_data.get("images_small"))
         for key, value in card_data.items():
             if key != "id":
                 setattr(existing, key, value)
