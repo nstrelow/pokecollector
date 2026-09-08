@@ -159,16 +159,74 @@ class FingerprintTests(unittest.TestCase):
         database silently stops being comparable with freshly computed hashes,
         and nothing else in the suite would notice.
 
-        Do not "fix" this test by updating the constant. Changing the hash
-        requires a migration that clears and recomputes the column.
+        The guard on the input is the hash of its PIXELS, not of the encoded
+        PNG. The PNG bytes depend on Pillow's zlib settings, so a Pillow upgrade
+        would have tripped this assertion as a false alarm and invited someone
+        to "fix" the golden vector below.
+
+        Do not "fix" that vector. Changing the hash requires a migration that
+        clears and recomputes the column.
         """
         raw = _golden_image_bytes()
+        with Image.open(io.BytesIO(raw)) as im:
+            pixels = np.asarray(im.convert("RGB"))
         self.assertEqual(
-            hashlib.sha256(raw).hexdigest(),
-            "7c584a24053f765e7a595aed832584f93937fc0418578a71fec6f4a26a46dc76",
+            hashlib.sha256(pixels.tobytes()).hexdigest(),
+            "4c32905ae44bd754b6558f25c9085aca8c60d08409c85eb02f77a79e9e7f0a0d",
             "the golden input image itself changed, so the vector below proves nothing",
         )
         self.assertEqual(fingerprint_reference(raw).hex(), "e311936e3c1d3f42")
+
+    def test_the_decoded_image_is_rgb_and_independent_of_the_source_file(self):
+        """_open's contract, which _hash_bits then relies on.
+
+        Two separate promises. The RGB normalisation is part of the hash
+        definition: every fingerprint in every database was computed after it,
+        and it is the difference between the two luma paths for a YCbCr source.
+        Independence from the file handle is what lets the trailing .copy() go:
+        convert("RGB") already calls load() and returns a new image, so keeping
+        the copy cost a second full-resolution buffer -- measured at +135MB of
+        peak RSS on one 48-megapixel PNG -- for nothing.
+        """
+        palette = Image.fromarray(
+            np.asarray(Image.open(io.BytesIO(_golden_image_bytes())).convert("RGB"))
+        ).convert("P", palette=Image.ADAPTIVE)
+        buf = io.BytesIO()
+        palette.save(buf, "PNG")
+
+        opened = card_fingerprint._open(buf.getvalue())
+        self.assertIsNotNone(opened)
+        self.assertEqual(opened.mode, "RGB")
+        # Fully materialised: usable long after Image.open's context exited.
+        self.assertEqual(np.asarray(opened).shape[2], 3)
+        self.assertIsNotNone(opened.getpixel((0, 0)))
+
+    def test_the_pixel_budget_boundary_admits_an_image_of_exactly_the_cap(self):
+        """`> max_pixels`, not `>=`: the cap is a maximum, not a forbidden size."""
+        with Image.open(io.BytesIO(_golden_image_bytes())) as im:
+            exact = im.width * im.height
+        with patch.object(card_fingerprint, "MAX_PIXELS", exact):
+            self.assertIsNotNone(fingerprint_reference(_golden_image_bytes()))
+        with patch.object(card_fingerprint, "MAX_PIXELS", exact - 1):
+            self.assertIsNone(fingerprint_reference(_golden_image_bytes()))
+
+    def test_a_failure_after_decoding_returns_none_instead_of_raising(self):
+        """All three entry points document "or None if unusable" -- all three mean it.
+
+        _open was wrapped in try/except but the hashing that follows it was not,
+        so a MemoryError from the 32x32 resize on a hostile upload propagated to
+        the caller from code whose contract says it returns None. api/recognize
+        used to return None here.
+        """
+        raw = _golden_image_bytes()
+
+        def boom(img):
+            raise MemoryError("resize failed")
+
+        with patch.object(card_fingerprint, "_hash_bits", boom):
+            self.assertIsNone(fingerprint_reference(raw))
+            self.assertIsNone(fingerprint_photo(raw))
+            self.assertIsNone(hash_bits(raw))
 
     def test_the_scanner_tiebreak_uses_the_same_hash_definition(self):
         """api/recognize.py must not grow a second copy of this hash."""
@@ -343,6 +401,28 @@ class CropTests(unittest.TestCase):
         card = _card(seed=5)
         self.assertEqual(crop_to_card(card).size, card.size)
 
+    def test_the_already_tight_boundary_is_inclusive(self):
+        """A box covering exactly _ALREADY_TIGHT of the frame is left alone.
+
+        The threshold exists because cropping a photo the card already fills
+        only desynchronises it from the catalogue render. At exactly the
+        threshold there is by definition nothing worth removing, so cropping
+        there would trim ~28% of the frame for no reason. Detection cannot be
+        steered to hit the boundary exactly, so the box is supplied directly.
+        """
+        frame = Image.new("RGB", (100, 100))
+        exact = (0, 0, 90, 80)  # 7200 / 10000 == _ALREADY_TIGHT
+        self.assertAlmostEqual(
+            (exact[2] - exact[0]) * (exact[3] - exact[1]) / 10000.0,
+            card_fingerprint._ALREADY_TIGHT,
+        )
+        with patch.object(card_fingerprint, "find_card_box", lambda img: exact):
+            self.assertEqual(crop_to_card(frame).size, (100, 100))
+
+        just_under = (0, 0, 90, 79)  # 7110 / 10000, below the threshold
+        with patch.object(card_fingerprint, "find_card_box", lambda img: just_under):
+            self.assertEqual(crop_to_card(frame).size, (90, 79))
+
     def test_cropping_makes_a_desk_photo_match_the_reference(self):
         """The whole point of the crop: framing must not break recognition."""
         card = _card(seed=6)
@@ -380,6 +460,39 @@ class BlurTests(unittest.TestCase):
         # Centred, so the mass lands symmetrically around the impulse.
         self.assertAlmostEqual(float(blurred[0, 7]), float(blurred[0, 13]))
         self.assertAlmostEqual(float(blurred[0].sum()), 7.0)
+
+    def test_the_default_radius_is_the_one_the_detector_is_tuned_at(self):
+        """find_card_box calls _box_blur with no radius, so the default is the
+
+        tuning. The test above passes radius=3 explicitly and therefore says
+        nothing about it: changing the default to 1 narrows the smoothing the
+        energy profile is built from, and the crop tests are far too tolerant to
+        notice a texture scale three times finer.
+        """
+        impulse = np.zeros((1, 21))
+        impulse[0, 10] = 7.0
+        default = card_fingerprint._box_blur(impulse)
+        self.assertEqual(
+            np.flatnonzero(default[0] > 1e-9).tolist(), list(range(7, 14))
+        )
+        np.testing.assert_allclose(
+            default, card_fingerprint._box_blur(impulse, radius=3)
+        )
+
+    def test_the_smoothing_scale_is_what_separates_card_from_carpet(self):
+        """Why radius matters, not just that it has a value.
+
+        A textured background is high-frequency; the card is a large structure.
+        Smoothing at the wrong scale lets the background's own grain survive
+        into the energy profile, and the box grows to swallow the frame. This is
+        the failure a narrower window causes and the end-to-end crop assertions
+        do not catch.
+        """
+        rng = np.random.default_rng(3)
+        speckle = rng.normal(0, 1.0, (1, 401))
+        wide = card_fingerprint._box_blur(speckle, radius=3)
+        narrow = card_fingerprint._box_blur(speckle, radius=1)
+        self.assertLess(float(np.std(wide)), float(np.std(narrow)) * 0.85)
 
 
 class SearchTests(unittest.TestCase):
@@ -442,12 +555,63 @@ class SearchTests(unittest.TestCase):
         empty = np.empty((0, HASH_BYTES), dtype=np.uint8)
         self.assertEqual(search(fingerprint_reference(_to_bytes(_card())), empty), [])
 
+    def test_the_composite_ranking_key_survives_a_catalogue_sized_index(self):
+        """The distance is shifted 32 bits, not 16, and the catalogue is 58,634.
+
+        search packs (distance, row index) into one int64 so argpartition can
+        rank by distance with ties broken by row. Sixteen bits of room for the
+        row index is enough for 65,536 rows and then silently wrong: a row past
+        that overflows into the distance field and outranks genuinely closer
+        cards. The live catalogue is already 58,634 rows, so this is not a
+        theoretical bound -- it is one set away.
+        """
+        rows = 70000
+        query = bytes(HASH_BYTES)
+        index = np.zeros((rows, HASH_BYTES), dtype=np.uint8)
+        index[:, 0] = 0xFF          # everything is 8 bits away by default
+        index[0][0] = 0b1           # ...except row 0, which is 1 bit away
+        index[rows - 1][0] = 0      # ...and the last row, an exact match
+
+        ranked = search(query, index, limit=3)
+        self.assertEqual(
+            ranked[0], (rows - 1, 0),
+            "the exact match past row 65,535 must still rank first",
+        )
+        self.assertEqual(ranked[1], (0, 1))
+
+        # Ties across the boundary still resolve to the lower row index.
+        tied = np.zeros((rows, HASH_BYTES), dtype=np.uint8)
+        tied[:, 0] = 0xFF
+        for row in (3, 65535, 65536, rows - 1):
+            tied[row][0] = 0
+        self.assertEqual(
+            [row for row, _ in search(query, tied, limit=4)],
+            [3, 65535, 65536, rows - 1],
+        )
+
     def test_confidence_needs_distance_and_margin(self):
         self.assertTrue(is_confident([(0, 2), (1, 14)]))
         # Close to the top match, so the two cannot be told apart.
         self.assertFalse(is_confident([(0, 2), (1, 4)]))
         # Clear margin, but nothing is actually similar.
         self.assertFalse(is_confident([(0, 30), (1, 60)]))
+
+    def test_the_margin_boundary_is_inclusive(self):
+        """MIN_MARGIN is the smallest margin that counts, not the first that fails.
+
+        The sweep behind it reads "MIN_MARGIN 5 -> 15.6% confident at 99.0%
+        precision", and those figures were measured with a margin of exactly 5
+        accepted. Excluding it silently moves the operating point to the
+        MIN_MARGIN=6 row and quietly drops confident answers.
+        """
+        margin = card_fingerprint.MIN_MARGIN
+        self.assertTrue(is_confident([(0, 2), (1, 2 + margin)]))
+        self.assertFalse(is_confident([(0, 2), (1, 2 + margin - 1)]))
+
+    def test_the_distance_boundary_is_inclusive(self):
+        limit = MAX_DISTANCE
+        self.assertTrue(is_confident([(0, limit), (1, limit + 40)]))
+        self.assertFalse(is_confident([(0, limit + 1), (1, limit + 41)]))
 
     def test_a_match_in_the_noise_floor_is_never_confident(self):
         """The distance bound has to bind somewhere useful.

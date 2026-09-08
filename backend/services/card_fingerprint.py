@@ -26,13 +26,22 @@ It deliberately uses only numpy and Pillow, both already required by the backend
 so enabling it adds no dependency and no image weight.
 
 Measured on a 42,254-card catalogue (en/de/ja/zh-tw) against 7,098 degraded
-photographs, with the correct card ranked inside the returned shortlist:
+photographs. "Correct" has two meanings here and they differ by roughly nine
+points, so both are always stated:
 
-    without cropping   33.6%
-    with cropping      91.6%
+                                        artwork   exact printing
+    correct in the top-12 shortlist      91.62%          90.60%
+    correct at rank 1                    70.05%          61.50%
 
-The gap is entirely about framing: hashing a whole photograph fails as soon as
-the card does not fill the frame, which is why `crop_to_card` exists.
+"Artwork" means the same picture, whatever language it was printed in; "exact
+printing" means the same catalogue row (`id`, so language-specific). The gap is
+almost entirely reprints and localisations of one illustration, which are
+byte-different renders of the same art and therefore genuinely indistinguishable
+to a perceptual hash. The shortlist exists so the user picks the printing.
+
+Cropping is what makes any of it work. With the whole photograph hashed and no
+`crop_to_card`, artwork-in-top-12 falls from 91.62% to 33.6%: hashing a whole
+photograph fails as soon as the card does not fill the frame.
 """
 from __future__ import annotations
 
@@ -63,23 +72,29 @@ HASH_BYTES = HASH_BITS // 8
 # The margin is the whole decision; MAX_DISTANCE barely participates. Every
 # value from 10 to 24 gives the identical 15.58% at 99.01%, because no photo
 # that clears the margin test is ever further than 10 bits away. 20 was
-# therefore an inert number pretending to be a safety bound. 12 is tightened to
-# where it can actually bind without costing a single measured decision, which
-# matters for inputs the benchmark does not contain: a synthetic non-card upload
-# lands at distance 12-20 from its nearest of 39,254 catalogue rows, so the old
-# bound of 20 admitted the entire noise floor.
+# therefore an inert number pretending to be a safety bound.
+#
+# 12 is lower, and costs no measured decision, but be honest about how little it
+# buys: a synthetic non-card upload lands 12 to 20 bits from its nearest of
+# 39,254 catalogue rows, so the noise floor STARTS at exactly 12 and a
+# distance-12 coincidence still clears this bound. MAX_DISTANCE excludes the
+# upper four fifths of the floor, not the floor. What actually rejects nonsense
+# is MIN_MARGIN, which fired on 0 of 400 synthetic non-card uploads.
 #
 # MIN_MARGIN stays at 5. Raising it to 8 removes 7 of the 11 wrong confident
 # calls but also 455 of the 1,095 right ones, and a confident result is still
 # presented for review alongside the shortlist, so coverage is worth more here
-# than the last 0.4 points of precision.
+# than the last 0.4 points of precision. All 11 of those wrong calls were the
+# right artwork in the wrong language: confident precision is 99.01% on the
+# exact printing and 100% on the artwork.
 MAX_DISTANCE = 12
 MIN_MARGIN = 5
 
 # Entries further than this are dropped from the shortlist entirely, so a
 # shortlist can legitimately come back empty. Derived from the same run: across
-# the 6,431 photos whose correct card reached the top 12, that card was never
-# further than 20 bits away (median 4, p99 16), so 24 costs no recall at all.
+# the 6,431 photos whose exact printing reached the top 12 (90.60% of 7,098),
+# that row was never further than 20 bits away (median 4, p99 16), so 24 costs
+# no recall at all.
 #
 # Be honest about what this does NOT do. At 64 bits over 42k rows there is a
 # noise floor: a pure-noise upload still finds a nearest neighbour at distance
@@ -231,11 +246,17 @@ def _hash_bits(img: Image.Image) -> np.ndarray:
     api/recognize.py's `_perceptual_hash` delegates here, so the LLM scanner's
     tiebreak and the persisted `cards.image_phash` can never drift apart.
 
-    Note the deliberate RGB-then-luma path: callers hand us an image that
-    `_open` already converted to RGB, so a palette or CMYK source is normalised
-    through RGB rather than converted straight to L. Pillow's direct CMYK->L is
-    not a luma conversion at all, and the persisted column was computed this
-    way, so RGB-first is the definition we keep.
+    Callers hand us an image that `_open` has already normalised to RGB, and
+    that normalisation is part of the definition -- not because it changes the
+    luma. It was previously claimed here that "Pillow's direct CMYK->L is not a
+    luma conversion at all"; that is false. Measured on Pillow 12.3,
+    `im.convert("L")` and `im.convert("RGB").convert("L")` are pixel-identical
+    (max absolute difference 0) for RGB, CMYK, P (adaptive, web and
+    transparency palettes), RGBA including fully transparent pixels, LA, L, 1,
+    I, I;16, F and HSV. Only YCbCr differs, by at most 1. The real reasons to
+    keep RGB-first are that every fingerprint already in every install's
+    database was computed this way, and that `convert("RGB")` also gives back a
+    fully materialised image that no longer depends on the source file handle.
     """
     pixels = np.asarray(
         img.convert("L").resize((32, 32), Image.Resampling.LANCZOS), dtype=float
@@ -243,6 +264,23 @@ def _hash_bits(img: Image.Image) -> np.ndarray:
     transform = _dct_matrix(32)
     low = (transform @ pixels @ transform.T)[:8, :8]
     return (low > np.median(low)).flatten()
+
+
+def _safe_hash_bits(img: Image.Image) -> np.ndarray | None:
+    """`_hash_bits` with the same "unusable input is None, never an exception"
+    contract as `_open`.
+
+    Decoding is not the only step that can fail on a hostile or merely enormous
+    upload: the 32x32 LANCZOS resize allocates, and MemoryError or a truncated
+    -image OSError surfacing here used to escape to the caller from
+    `hash_bits`, `fingerprint_reference` and `fingerprint_photo` alike, even
+    though all three document a None return. One rule for both halves.
+    """
+    try:
+        return _hash_bits(img)
+    except Exception:
+        logger.debug("fingerprint: hashing a decoded image failed", exc_info=True)
+        return None
 
 
 def hash_bits(
@@ -254,10 +292,20 @@ def hash_bits(
     img = _open(image_bytes, max_pixels)
     if img is None:
         return None
-    return _hash_bits(img)
+    return _safe_hash_bits(img)
 
 
 def _open(image_bytes: bytes, max_pixels: int | None = None) -> Image.Image | None:
+    """Decode to a materialised RGB image, or None if it is unusable or huge.
+
+    No trailing `.copy()`. `im.convert("RGB")` already calls `load()` and
+    returns a new, independent image, so the copy was a second full-resolution
+    buffer for nothing. Measured peak RSS for one 48-megapixel PNG through the
+    full hash: +277MB converting straight to L, +415MB via RGB, +550MB via RGB
+    plus the copy. api/recognize.py hashes up to 8 reference images in sequence
+    and `fingerprint_cards` runs 4 of these concurrently, so the copy was worth
+    roughly half a gigabyte of transient peak at MAX_REFERENCE_IMAGE_PIXELS.
+    """
     # Resolved at call time, not bound as a default, so tests can patch the cap.
     max_pixels = MAX_PIXELS if max_pixels is None else max_pixels
     try:
@@ -267,7 +315,7 @@ def _open(image_bytes: bytes, max_pixels: int | None = None) -> Image.Image | No
                 width, height = im.size
                 if width <= 0 or height <= 0 or width * height > max_pixels:
                     return None
-                return im.convert("RGB").copy()
+                return im.convert("RGB")
     except Exception:
         return None
 
@@ -282,7 +330,10 @@ def fingerprint_reference(image_bytes: bytes) -> bytes | None:
     img = _open(image_bytes)
     if img is None:
         return None
-    return np.packbits(_hash_bits(img).astype(np.uint8)).tobytes()
+    bits = _safe_hash_bits(img)
+    if bits is None:
+        return None
+    return np.packbits(bits.astype(np.uint8)).tobytes()
 
 
 def fingerprint_photo(image_bytes: bytes) -> bytes | None:
@@ -290,7 +341,15 @@ def fingerprint_photo(image_bytes: bytes) -> bytes | None:
     img = _open(image_bytes)
     if img is None:
         return None
-    return np.packbits(_hash_bits(crop_to_card(img)).astype(np.uint8)).tobytes()
+    try:
+        img = crop_to_card(img)
+    except Exception:
+        logger.debug("fingerprint: card detection failed", exc_info=True)
+        return None
+    bits = _safe_hash_bits(img)
+    if bits is None:
+        return None
+    return np.packbits(bits.astype(np.uint8)).tobytes()
 
 
 # --- search ---------------------------------------------------------------
@@ -345,7 +404,17 @@ def search(
 
 
 def is_confident(ranked: list[tuple[int, int]]) -> bool:
-    """Whether the best match is close enough, and clear enough of the rest."""
+    """Whether the best match is close enough, and clear enough of the rest.
+
+    `ranked` must be a shortlist that was cut at SHORTLIST_MAX_DISTANCE over a
+    real catalogue-sized index. A single surviving entry then means every other
+    row was more than SHORTLIST_MAX_DISTANCE away -- an enormous margin -- so it
+    is judged on distance alone. That reasoning does NOT hold when the index is
+    tiny, because then a lone entry only means there was nothing else to rank
+    against. Callers are responsible for not asking about an index too small to
+    be meaningful; api/recognize_local.py refuses to answer at all until
+    fingerprint_index.coverage() reports ready.
+    """
     if len(ranked) < 2:
         return bool(ranked) and ranked[0][1] <= MAX_DISTANCE
     best, runner_up = ranked[0][1], ranked[1][1]
