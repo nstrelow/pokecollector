@@ -1,0 +1,51 @@
+# CodeRabbit configuration for pokecollector.
+# https://docs.coderabbit.ai/getting-started/configure-coderabbit
+
+language: en-US
+
+reviews:
+  profile: assertive
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    drafts: false
+  path_instructions:
+    - path: "backend/**/*.py"
+      instructions: >
+        This is a FastAPI + SQLAlchemy backend. Flag: SQLAlchemy sessions used
+        from worker threads without care, blocking work left on the event loop
+        (async def handlers doing CPU-bound or DB-bound work inline instead of
+        via run_in_threadpool), missing invalidation after any write to the
+        cards table, and any code path that could leave a DB transaction open
+        across a slow network call.
+    - path: "backend/services/card_fingerprint.py"
+      instructions: >
+        image_phash is a persisted column. Any change to the hashing
+        algorithm (resize filter, DCT parameters, luma conversion, bit
+        packing) silently invalidates every stored fingerprint. Flag such
+        changes explicitly even if behavior looks correct, and check whether
+        the golden-vector test in tests/test_card_fingerprint.py was updated
+        to match.
+    - path: "backend/services/fingerprint_backfill.py"
+      instructions: >
+        This talks to a third-party CDN (assets.tcgdex.net) on a schedule.
+        Flag: HTTP status codes treated as permanently absent that could
+        actually be transient (403/401/429 in particular), retry logic that
+        doesn't back off, and any query filter that could permanently exclude
+        a card from being retried.
+    - path: "backend/tests/**"
+      instructions: >
+        Prefer literal expected values over referencing the same constant the
+        implementation uses -- a test that reads MIN_MARGIN from the module
+        under test can't catch a change to MIN_MARGIN.
+
+  tools:
+    ruff:
+      enabled: true
+
+chat:
+  auto_reply: true
