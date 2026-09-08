@@ -74,10 +74,24 @@ class Card(Base):
     images_large = Column(String)
     # 64-bit perceptual hash of the card artwork, for offline recognition.
     # Populated by the hourly fingerprint job (services/fingerprint_backfill.py)
-    # and by scripts/backfill_fingerprints.py; cleared by upsert_card when the
-    # artwork URL changes, and NULL until the job catches up or if there is no
-    # image. Custom cards are never fingerprinted.
+    # and by scripts/backfill_fingerprints.py, and NULL until the job catches up
+    # or if there is no image. Custom cards are never fingerprinted.
     image_phash = Column(LargeBinary, nullable=True)
+    # The exact images_small value image_phash was computed from -- the
+    # fingerprint's provenance, not a duplicate for its own sake.
+    #
+    # Every catalogue writer that rotates images_small has to remember to drop
+    # the fingerprint, and three of them forgot, which is silent permanent
+    # corruption: the stale hash keeps matching photographs of the OLD artwork
+    # at distance 0. With the provenance stored, staleness is a fact about the
+    # row rather than a promise about the code -- "image_phash_source IS
+    # DISTINCT FROM images_small" is exactly "this hash is not of this picture",
+    # and the backfill re-queues such rows automatically.
+    #
+    # It also doubles as the negative cache: set with image_phash left NULL, it
+    # records "this URL was tried and is permanently unusable", so a card whose
+    # render never decodes stops reappearing at the head of every batch.
+    image_phash_source = Column(String, nullable=True)
     image_source_lang = Column(String, nullable=True)  # Set when images are copied from another TCGdex language
     data_source_lang = Column(String, nullable=True)   # Set when metadata is copied from another TCGdex language
     custom_image_url = Column(String, nullable=True)   # Manual temporary fallback while TCGdex has no image

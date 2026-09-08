@@ -77,6 +77,12 @@ def _run_migrations(conn):
         "ALTER TABLE cards ADD COLUMN IF NOT EXISTS is_digital BOOLEAN DEFAULT FALSE",
         # Perceptual hash of the card artwork, used for offline recognition.
         "ALTER TABLE cards ADD COLUMN IF NOT EXISTS image_phash BYTEA",
+        # Which images_small URL that hash was computed from. Existing rows are
+        # backfilled to their current URL: they were hashed from it, and
+        # pretending otherwise would re-download the whole catalogue once.
+        "ALTER TABLE cards ADD COLUMN IF NOT EXISTS image_phash_source VARCHAR",
+        """UPDATE cards SET image_phash_source = images_small
+           WHERE image_phash IS NOT NULL AND image_phash_source IS NULL""",
         # Create custom_card_matches table if it doesn't exist (handled by create_all, belt+suspenders)
         """CREATE TABLE IF NOT EXISTS custom_card_matches (
             id SERIAL PRIMARY KEY,
