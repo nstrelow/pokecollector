@@ -178,6 +178,18 @@ def indexable_card_filter(db: Session):
     Custom cards are excluded outright. They are per-user data (private cards,
     other people's shared templates), and a shared index has no way to tell one
     viewer from another, so they are never fingerprinted or indexed at all.
+
+    Accepted consequence in multi-user installs: app-wide pins are app-wide. If
+    user A collects a Japanese card while "ja" is not in the global catalogue
+    languages, that set becomes indexable for everybody, so user B's shortlist
+    can contain a Japanese printing they never asked to see. This is judged
+    acceptable because what leaks is TCGdex catalogue data -- a public card
+    name, number and artwork URL, the same rows any user can already reach by
+    enabling the language in settings -- and never anything about A's
+    collection. The alternative, a per-user index, means one full snapshot per
+    user at ~40MB of row metadata each (see the module docstring in
+    services/fingerprint_index.py), which is not worth paying to hide a public
+    card list.
     """
     active_languages = set(get_configured_sync_languages(db))
     pinned_pairs = get_pinned_set_language_pairs(db, user_id=None)

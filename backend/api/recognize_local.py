@@ -46,12 +46,21 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# How many candidates the review UI is offered. This is the number the
+# accuracy figures in services/card_fingerprint are quoted at (91.62% of photos
+# have the right artwork inside the top 12), so it is part of what the endpoint
+# promises, not an arbitrary page size.
 SHORTLIST = 12
+
+# Distance at or below which a candidate is labelled "high". Half of
+# MAX_DISTANCE: on the benchmark the correct row sits at a median distance of 4,
+# so this separates "this is the card" from "this is in the running".
+HIGH_CONFIDENCE_DISTANCE = 8
 
 
 def _confidence(distance: int) -> str:
     """Coarse label for the UI, so the list is not silently ordered."""
-    if distance <= 8:
+    if distance <= HIGH_CONFIDENCE_DISTANCE:
         return "high"
     if distance <= MAX_DISTANCE:
         return "medium"
@@ -85,12 +94,17 @@ async def recognize_card_locally(
 
     # A rebuild reads the whole cards table; never do that on the loop.
     snapshot = await run_in_threadpool(fingerprint_index.get, db)
-    if not snapshot.rows:
+    # Not "is the index non-empty" but the same readiness rule /status reports.
+    # A partly built index gives confident-looking answers off whatever fraction
+    # of the catalogue happens to be hashed so far, and `is_confident`'s margin
+    # test has nothing meaningful to be a margin against on a small one.
+    if not snapshot.ready:
         raise HTTPException(
             status_code=503,
             detail=(
-                "No card fingerprints are stored yet. Offline recognition "
-                "becomes available once the fingerprint job has run."
+                "Card fingerprints are still being built. Offline recognition "
+                "becomes available once enough of the catalogue is covered; see "
+                "recognize/local/status for progress."
             ),
         )
 

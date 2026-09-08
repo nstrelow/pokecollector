@@ -2,11 +2,18 @@
 
 Two structures are held per process. The packed hashes are genuinely tiny --
 8 bytes a card, 338KB at 42,254 cards -- but the row metadata needed to render
-a match is not: measured at 13.9MB for the same 42,254 rows, so roughly 19MB
-across a full 58k catalogue, and a rebuild transiently holds the SQLAlchemy
-result set on top of that. "The whole index is ~330KB" was only ever true of the
-half that is not the cost. This is why the index is rebuilt in place rather than
-kept per user or per request.
+a match is not.
+
+Measured with tracemalloc over the real catalogue's own values (58,630 rows
+dumped from a production database), building exactly the tuple-of-dicts that
+`_load` builds, from FRESH string objects: 674 bytes a row, so 28.5MB at 42,254
+rows and 39.5MB at 58,634. An earlier comment here claimed 13.9MB for 42,254
+rows; that measurement reused the strings it was measuring, which is not what
+psycopg2 does -- every fetched row arrives as new str objects -- so it
+undercounted by about half. A rebuild transiently holds the SQLAlchemy result
+set on top of the new snapshot, so peak is roughly double. "The whole index is
+~330KB" was only ever true of the half that is not the cost. This is why the
+index is rebuilt in place rather than kept per user or per request.
 
 Reads take a single immutable snapshot, so a rebuild can never hand a caller new
 hashes with stale metadata. Rebuilds are triggered by a process-local
@@ -19,10 +26,12 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import uuid
 from dataclasses import dataclass
 
 import numpy as np
-from sqlalchemy import func
+from sqlalchemy import and_, case, func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models import Card, Setting
@@ -48,6 +57,20 @@ READY_COVERAGE = 0.5
 READY_MIN_CARDS = 500
 
 
+def _is_ready(with_hash: int, with_image: int) -> bool:
+    """The one definition of "ready", shared by /status and the scan endpoint.
+
+    These two used to disagree: /status applied this rule while the scan
+    endpoint only checked that the index was non-empty, so a freshly seeded
+    install could return `_identity_confident: true` off a couple of thousand
+    cards while /status still said it was not ready. `is_confident`'s margin
+    test assumes a catalogue-sized index to be a margin against; on a small one
+    a lone survivor at distance 12 is not evidence of anything.
+    """
+    fraction = (with_hash / with_image) if with_image else 0.0
+    return with_hash >= READY_MIN_CARDS and fraction >= READY_COVERAGE
+
+
 @dataclass(frozen=True)
 class Snapshot:
     """One consistent view of the index. Never mutated after construction."""
@@ -57,6 +80,10 @@ class Snapshot:
     built_at: float
     generation: int
     version: str
+    # Whether this snapshot is complete enough to answer with, by the same rule
+    # `coverage()` reports to /status. Carried on the snapshot so the scan
+    # endpoint can check it without a second aggregate query per request.
+    ready: bool = False
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -68,6 +95,7 @@ _EMPTY = Snapshot(
     built_at=0.0,
     generation=-1,
     version="",
+    ready=False,
 )
 
 _lock = threading.Lock()
@@ -82,6 +110,17 @@ def invalidate() -> None:
     artwork or language or digital flag changed, or a catalogue card deleted.
     Custom cards are never indexed (see `indexable_card_filter`), so custom-card
     creation, editing and deletion need no invalidation.
+
+    Known gap, deliberately not covered here. `indexable_card_filter` also
+    depends on `get_pinned_set_language_pairs`, which every collection,
+    wishlist and binder write can change: adding the first card of a set in a
+    language that is not in `tcgdex_sync_languages` makes that whole set
+    indexable, and removing the last one makes it un-indexable again. Those
+    writes are frequent and per-user, and calling invalidate() from each would
+    make a normal collecting session rebuild the index continuously, so they do
+    not. The consequence is bounded by MAX_AGE_SECONDS: for at most 15 minutes
+    a newly pinned language is not yet matchable, or an unpinned one still is.
+    Callers that need this immediately should invalidate explicitly.
 
     This only affects the calling process. Use `bump_version` for a change made
     outside the running server.
@@ -102,18 +141,38 @@ def bump_version(db: Session) -> str:
     Used by out-of-process writers -- the backfill script and the scheduled
     fingerprint job -- so a running server picks the new hashes up on its next
     scan instead of serving the old ones until MAX_AGE_SECONDS elapses.
+
+    The marker is a fresh random token, not an incremented integer. Readers only
+    ever ask "is this different from what my snapshot was built with", so the
+    value carries no meaning, and read-modify-writing a counter from two
+    processes at once loses one of the two updates -- exactly the invalidation
+    you cannot afford to lose, and it raised a duplicate-key IntegrityError when
+    both raced to create the row. A blind UPDATE to a new token is atomic.
+
+    Also invalidates locally: a process that just wrote hashes must not go on
+    serving its own stale snapshot either.
     """
-    row = db.query(Setting).filter(Setting.key == VERSION_SETTING_KEY).first()
-    try:
-        current = int(row.value) if row else 0
-    except (TypeError, ValueError):
-        current = 0
-    value = str(current + 1)
-    if row:
-        row.value = value
+    value = uuid.uuid4().hex
+    updated = (
+        db.query(Setting)
+        .filter(Setting.key == VERSION_SETTING_KEY)
+        .update({"value": value}, synchronize_session=False)
+    )
+    if updated:
+        db.commit()
     else:
-        db.add(Setting(key=VERSION_SETTING_KEY, value=value))
-    db.commit()
+        # First bump on this install. Another process may be inserting the same
+        # primary key at the same moment; its row is an equally good "something
+        # changed" signal, but overwrite it so this call's writes are covered.
+        try:
+            db.add(Setting(key=VERSION_SETTING_KEY, value=value))
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            db.query(Setting).filter(Setting.key == VERSION_SETTING_KEY).update(
+                {"value": value}, synchronize_session=False
+            )
+            db.commit()
     invalidate()
     return value
 
@@ -126,6 +185,10 @@ def _load(db: Session) -> Snapshot:
     # after the read would leave the index stale for a full MAX_AGE_SECONDS.
     generation = _generation
     version = read_version(db)
+    indexable = indexable_card_filter(db)
+    with_image = int(
+        db.query(func.count(Card.images_small)).filter(indexable).scalar() or 0
+    )
 
     rows = (
         db.query(
@@ -133,7 +196,7 @@ def _load(db: Session) -> Snapshot:
             Card.lang, Card.rarity, Card.images_small, Card.image_phash,
         )
         .filter(Card.image_phash.isnot(None))
-        .filter(indexable_card_filter(db))
+        .filter(indexable)
         # Postgres row order is not stable across rebuilds, and search breaks
         # ties by row index. Without an explicit order, which of two
         # identical-artwork cards wins rank 1 would flip between rebuilds.
@@ -172,8 +235,12 @@ def _load(db: Session) -> Snapshot:
         built_at=time.time(),
         generation=generation,
         version=version,
+        ready=_is_ready(len(usable), with_image),
     )
-    logger.info("fingerprint index: loaded %d cards", len(usable))
+    logger.info(
+        "fingerprint index: loaded %d cards of %d with artwork (ready=%s)",
+        len(usable), with_image, snapshot.ready,
+    )
     return snapshot
 
 
@@ -196,16 +263,33 @@ def get(db: Session) -> Snapshot:
 
     Blocking: a rebuild reads the whole cards table and takes 1-3s at catalogue
     scale, so callers must not run this on the event loop.
+
+    At most one thread rebuilds. The others do NOT queue behind it: if a
+    snapshot already exists they take the slightly stale one and answer now.
+    Waiting for the lock was a latency cliff -- every settings change and every
+    sync invalidates, and each waiter occupies both an anyio worker thread and a
+    pooled database connection for the whole 1-3s rebuild, so a handful of
+    concurrent scans after a sync could exhaust the pool. The extra staleness is
+    bounded by one rebuild, against a snapshot that is allowed to be
+    MAX_AGE_SECONDS old anyway. The very first load has nothing to serve, so
+    that one does block.
     """
     global _snapshot
     snapshot = _snapshot
     if not _is_stale(snapshot, db):
         return snapshot or _EMPTY
-    with _lock:
+
+    blocking = snapshot is None
+    if not _lock.acquire(blocking=blocking):
+        # Someone else is rebuilding and we have something to answer with.
+        return _snapshot or snapshot or _EMPTY
+    try:
         # Re-check inside the lock; another request may have just rebuilt.
         if _is_stale(_snapshot, db):
             _snapshot = _load(db)
         return _snapshot or _EMPTY
+    finally:
+        _lock.release()
 
 
 def reset() -> None:
@@ -217,13 +301,26 @@ def reset() -> None:
 
 
 def coverage(db: Session) -> dict:
-    """How much of the catalogue can currently be recognised offline."""
+    """How much of the catalogue can currently be recognised offline.
+
+    `cards_fingerprinted` counts indexable cards that have BOTH artwork and a
+    hash, which is the numerator the `coverage` fraction needs. A row holding a
+    hash but no artwork URL is a data anomaly rather than usable coverage; it
+    would still be matchable, so this slightly understates the index size in
+    exchange for a fraction that cannot exceed 1.0.
+    """
     indexable = indexable_card_filter(db)
     total, with_image, with_hash = (
         db.query(
             func.count(Card.id),
             func.count(Card.images_small),
-            func.count(Card.image_phash),
+            # Only hashes on rows that also have artwork, so the fraction below
+            # cannot exceed 1.0. A card whose images_small was cleared after it
+            # was fingerprinted counted in the numerator but not the
+            # denominator, and coverage went over 100%.
+            func.count(case(
+                (and_(Card.images_small.isnot(None), Card.image_phash.isnot(None)), 1)
+            )),
         )
         .filter(indexable)
         .one()
@@ -237,5 +334,5 @@ def coverage(db: Session) -> dict:
         "cards_with_image": with_image,
         "cards_fingerprinted": with_hash,
         "coverage": round(fraction, 4),
-        "ready": with_hash >= READY_MIN_CARDS and fraction >= READY_COVERAGE,
+        "ready": _is_ready(with_hash, with_image),
     }

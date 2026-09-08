@@ -23,6 +23,8 @@ try:
     from services.card_fingerprint import HASH_BYTES, fingerprint_reference
 
     DEPS_AVAILABLE = True
+    # The real production floor, captured before any test lowers it.
+    REAL_READY_MIN_CARDS = fingerprint_index.READY_MIN_CARDS
 except ModuleNotFoundError:
     DEPS_AVAILABLE = False
 
@@ -84,6 +86,20 @@ class LocalRecognitionApiTests(unittest.TestCase):
         self.app = app
         self.client = TestClient(app)
 
+        # The endpoint refuses to answer until the index covers enough of the
+        # catalogue (READY_MIN_CARDS cards at READY_COVERAGE). These fixtures
+        # are a handful of cards, so the floor is lowered rather than seeding
+        # five hundred; the gate itself is pinned in its own tests below.
+        self._ready_patch = patch.object(fingerprint_index, "READY_MIN_CARDS", 1)
+        self._ready_patch.start()
+        self.addCleanup(self._ready_patch.stop)
+
+    def _real_readiness(self):
+        """Restore the production floor for tests that pin the gate itself."""
+        return patch.object(
+            fingerprint_index, "READY_MIN_CARDS", REAL_READY_MIN_CARDS
+        )
+
     def tearDown(self):
         self.client.close()
         fingerprint_index.reset()
@@ -123,6 +139,41 @@ class LocalRecognitionApiTests(unittest.TestCase):
         response = self._post(_jpeg(_card_image(1)))
         self.assertEqual(response.status_code, 503)
         self.assertIn("fingerprint", response.json()["detail"].lower())
+
+    def test_a_half_built_index_is_not_answered_from(self):
+        """The 503 is a readiness rule, not "are there any rows at all".
+
+        The endpoint only checked that the index was non-empty, while /status
+        applied READY_MIN_CARDS and READY_COVERAGE. So a freshly seeded install
+        could return `_identity_confident: true` off a couple of thousand cards
+        while /status was still telling the user it was not ready.
+        `is_confident`'s margin test needs a catalogue-sized index to be a
+        margin against.
+        """
+        target = _card_image(21)
+        self._add_card("sv1-21_en", image=target)
+        for seed in range(22, 30):
+            self._add_card(f"sv1-{seed}_en", image=_card_image(seed))
+        fingerprint_index.reset()
+
+        with self._real_readiness():
+            response = self._post(_jpeg(target))
+            self.assertEqual(response.status_code, 503, response.text)
+            status = self.client.get("/api/cards/recognize/local/status").json()
+        self.assertFalse(status["ready"])
+
+    def test_coverage_below_the_threshold_is_not_ready_either(self):
+        """Enough cards, but most of the catalogue still unhashed."""
+        with patch.object(fingerprint_index, "READY_MIN_CARDS", 2):
+            self._add_card("sv1-40_en", image=_card_image(40))
+            self._add_card("sv1-41_en", image=_card_image(41))
+            for i in range(8):
+                self._add_card(f"sv1-5{i}_en", image_phash=None)
+            fingerprint_index.reset()
+            self.assertEqual(self._post(_jpeg(_card_image(40))).status_code, 503)
+            body = self.client.get("/api/cards/recognize/local/status").json()
+            self.assertLess(body["coverage"], fingerprint_index.READY_COVERAGE)
+            self.assertFalse(body["ready"])
 
     def test_authentication_is_required(self):
         self.app.dependency_overrides.pop(get_current_user)
@@ -196,12 +247,49 @@ class LocalRecognitionApiTests(unittest.TestCase):
         distances = [match["_distance"] for match in body["matches"]]
         self.assertEqual(distances, sorted(distances))
 
+    def test_the_shortlist_is_twelve_long(self):
+        """Twelve is the advertised number, not an implementation detail.
+
+        Every accuracy figure quoted for this feature is "the right artwork is
+        inside the top 12" (91.62%). Returning eight silently trades recall the
+        user is never told about, and the review UI is sized for twelve.
+        """
+        for seed in range(100, 130):
+            self._add_card(f"sv1-{seed}_en", image=_card_image(seed))
+        # Everything is in range, so the cutoff cannot be what limits this.
+        with patch("api.recognize_local.SHORTLIST_MAX_DISTANCE", 64):
+            body = self._post(_jpeg(_card_image(105))).json()
+        self.assertEqual(len(body["matches"]), 12)
+
+    def test_a_shorter_index_returns_everything_it_has(self):
+        for seed in range(200, 205):
+            self._add_card(f"sv1-{seed}_en", image=_card_image(seed))
+        with patch("api.recognize_local.SHORTLIST_MAX_DISTANCE", 64):
+            body = self._post(_jpeg(_card_image(200))).json()
+        self.assertEqual(len(body["matches"]), 5)
+
+    def test_the_confidence_label_boundaries(self):
+        """The labels order the list for the user, so their edges are decisions.
+
+        "high" is everything up to and including 8 -- half of MAX_DISTANCE --
+        and "medium" runs to MAX_DISTANCE itself.
+        """
+        from api.recognize_local import HIGH_CONFIDENCE_DISTANCE, _confidence
+        from services.card_fingerprint import MAX_DISTANCE
+
+        self.assertEqual(_confidence(0), "high")
+        self.assertEqual(_confidence(HIGH_CONFIDENCE_DISTANCE), "high")
+        self.assertEqual(_confidence(HIGH_CONFIDENCE_DISTANCE + 1), "medium")
+        self.assertEqual(_confidence(MAX_DISTANCE), "medium")
+        self.assertEqual(_confidence(MAX_DISTANCE + 1), "low")
+
     # --- status -------------------------------------------------------------
 
     def test_status_reports_coverage_and_readiness(self):
         self._add_card("sv1-30_en", image=_card_image(30))
         self._add_card("sv1-31_en", image_phash=None)
-        body = self.client.get("/api/cards/recognize/local/status").json()
+        with self._real_readiness():
+            body = self.client.get("/api/cards/recognize/local/status").json()
         self.assertEqual(body["cards_with_image"], 2)
         self.assertEqual(body["cards_fingerprinted"], 1)
         self.assertEqual(body["coverage"], 0.5)

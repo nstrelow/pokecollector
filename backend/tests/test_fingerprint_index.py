@@ -1,11 +1,14 @@
 import os
+import shutil
 import sys
+import tempfile
 import threading
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
+    import sqlalchemy as sa
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
     from sqlalchemy.pool import StaticPool
@@ -14,7 +17,11 @@ try:
     from models import Card, Setting, User
     from services import fingerprint_index
     from services.card_fingerprint import HASH_BYTES
-    from services.card_upsert import upsert_card
+    from services.card_upsert import (
+        add_catalogue_card,
+        apply_catalogue_fields,
+        upsert_card,
+    )
 
     DEPS_AVAILABLE = True
 except ModuleNotFoundError:
@@ -272,6 +279,100 @@ class FingerprintIndexTests(unittest.TestCase):
 
         self.assertEqual(len(fingerprint_index.get(self.db).rows), 2)
 
+    def test_the_database_marker_alone_forces_a_rebuild(self):
+        """The cross-process half, tested without the process-local half.
+
+        The test above cannot tell the two mechanisms apart: bump_version also
+        calls invalidate(), and both sessions live in this one process, so
+        deleting the version comparison in _is_stale entirely left it green.
+        Here the marker row is written by hand -- exactly what a genuinely
+        separate process's committed bump looks like from in here -- and nothing
+        touches the process-local generation counter.
+        """
+        self._card("first_en")
+        self.db.commit()
+        generation = fingerprint_index._generation
+        self.assertEqual(len(fingerprint_index.get(self.db).rows), 1)
+
+        self._card("second_en")
+        self.db.commit()
+        # Still one: nothing has signalled anything yet.
+        self.assertEqual(len(fingerprint_index.get(self.db).rows), 1)
+
+        writer = self.Session()
+        try:
+            writer.add(Setting(
+                key=fingerprint_index.VERSION_SETTING_KEY, value="written-elsewhere"
+            ))
+            writer.commit()
+        finally:
+            writer.close()
+
+        self.assertEqual(fingerprint_index._generation, generation,
+                         "this test must not rely on process-local invalidation")
+        self.assertEqual(len(fingerprint_index.get(self.db).rows), 2)
+
+    def test_a_process_that_bumps_the_marker_also_refreshes_itself(self):
+        """The process-local half, tested without the database half.
+
+        bump_version's own process holds a snapshot too. Writing the marker and
+        forgetting to invalidate locally left the writer -- the one process that
+        certainly knows the catalogue changed -- serving its own stale copy,
+        because _is_stale would then compare the new marker against a snapshot
+        it had just rebuilt from.
+        """
+        self._card("first_en")
+        self.db.commit()
+        fingerprint_index.get(self.db)
+
+        before = fingerprint_index._generation
+        fingerprint_index.bump_version(self.db)
+        self.assertGreater(fingerprint_index._generation, before)
+
+    def test_the_marker_is_not_a_read_modify_write(self):
+        """Two processes bumping at once must not lose one of the two updates.
+
+        A read-then-increment loses a bump under concurrency, and racing to
+        create the row raised a duplicate-key IntegrityError. The value only
+        ever has to be *different*, so it is written blind.
+        """
+        # From nothing, with the row absent.
+        first = fingerprint_index.bump_version(self.db)
+        self.assertEqual(fingerprint_index.read_version(self.db), first)
+        second = fingerprint_index.bump_version(self.db)
+        self.assertNotEqual(second, first)
+        self.assertEqual(fingerprint_index.read_version(self.db), second)
+
+        statements = []
+
+        def record(conn, cursor, statement, *rest):
+            statements.append(statement.strip().upper())
+
+        sa.event.listen(self.engine, "before_cursor_execute", record)
+        try:
+            fingerprint_index.bump_version(self.db)
+        finally:
+            sa.event.remove(self.engine, "before_cursor_execute", record)
+        self.assertTrue(any(s.startswith("UPDATE") for s in statements))
+        self.assertFalse(
+            [s for s in statements if s.startswith("SELECT") and "SETTINGS" in s],
+            f"the marker must not be read back before being written: {statements}",
+        )
+
+    def test_bumping_from_a_second_session_survives_a_racing_first_write(self):
+        """Both processes see the row appear; neither may raise."""
+        other = self.Session()
+        try:
+            other.add(Setting(
+                key=fingerprint_index.VERSION_SETTING_KEY, value="theirs"
+            ))
+            other.commit()
+            value = fingerprint_index.bump_version(self.db)
+        finally:
+            other.close()
+        self.assertNotEqual(value, "theirs")
+        self.assertEqual(fingerprint_index.read_version(self.db), value)
+
     def test_the_index_is_rebuilt_once_it_reaches_the_age_ceiling(self):
         self._card("first_en")
         self.db.commit()
@@ -319,6 +420,113 @@ class FingerprintIndexTests(unittest.TestCase):
         self._card("own_custom", is_custom=True, custom_owner_id=self.owner.id)
         self.db.commit()
         self.assertEqual(fingerprint_index.coverage(self.db)["cards_total"], 1)
+
+    def test_coverage_can_never_exceed_one(self):
+        """It divided hashes by artwork URLs and those are different sets.
+
+        A card that kept a hash after its images_small was cleared counted in
+        the numerator and not the denominator, and /status reported more than
+        100% coverage.
+        """
+        for i in range(4):
+            self._card(f"sv1-{i:04d}_en")
+        self._card("orphan_en", images_small=None)
+        self.db.commit()
+
+        stats = fingerprint_index.coverage(self.db)
+        self.assertEqual(stats["cards_total"], 5)
+        self.assertEqual(stats["cards_with_image"], 4)
+        self.assertEqual(stats["coverage"], 1.0)
+        self.assertLessEqual(stats["coverage"], 1.0)
+
+    def test_readiness_is_a_coverage_rule_not_just_a_non_empty_index(self):
+        """/status and the scan endpoint must agree on what "ready" means."""
+        for i in range(fingerprint_index.READY_MIN_CARDS + 100):
+            self._card(f"sv1-{i:05d}_en", image_phash=None)
+        self.db.commit()
+        self.assertFalse(fingerprint_index.coverage(self.db)["ready"])
+        self.assertFalse(fingerprint_index.get(self.db).ready)
+
+        # A handful of hashes is an index, but not a usable one.
+        self.db.query(Card).filter(Card.id < "sv1-00010_en").update(
+            {"image_phash": _hash(1)}
+        )
+        self.db.commit()
+        fingerprint_index.reset()
+        self.assertGreater(len(fingerprint_index.get(self.db).rows), 0)
+        self.assertFalse(fingerprint_index.get(self.db).ready)
+        self.assertFalse(fingerprint_index.coverage(self.db)["ready"])
+
+        self.db.query(Card).update({"image_phash": _hash(2)})
+        self.db.commit()
+        fingerprint_index.reset()
+        self.assertTrue(fingerprint_index.get(self.db).ready)
+        self.assertTrue(fingerprint_index.coverage(self.db)["ready"])
+
+    # --- concurrency --------------------------------------------------------
+
+    def test_a_rebuild_does_not_block_everyone_else(self):
+        """One slow rebuild must not queue up every concurrent scan behind it.
+
+        A rebuild reads the whole cards table (1-3s at catalogue scale) and
+        every invalidation -- a settings change, a sync -- triggers one. Holding
+        the process-wide lock across it meant each waiter also held an anyio
+        worker thread and a pooled database connection for the full rebuild.
+        Readers take the slightly stale snapshot instead.
+        """
+        self._card("first_en")
+        self.db.commit()
+        fingerprint_index.get(self.db)  # prime, so there is something to serve
+
+        self._card("second_en")
+        self.db.commit()
+        fingerprint_index.invalidate()
+
+        started = threading.Event()
+        release = threading.Event()
+        real_load = fingerprint_index._load
+
+        def slow_load(db):
+            started.set()
+            release.wait(5)
+            return real_load(db)
+
+        fingerprint_index._load = slow_load
+        rebuilt = []
+        waiter_result = []
+        try:
+            rebuilder = threading.Thread(
+                target=lambda: rebuilt.append(
+                    len(fingerprint_index.get(self.Session()).rows)
+                )
+            )
+            rebuilder.start()
+            self.assertTrue(started.wait(5), "the rebuild never started")
+
+            def waiter():
+                session = self.Session()
+                try:
+                    waiter_result.append(len(fingerprint_index.get(session).rows))
+                finally:
+                    session.close()
+
+            reader = threading.Thread(target=waiter)
+            reader.start()
+            reader.join(5)
+            self.assertFalse(reader.is_alive(), "a reader queued behind the rebuild")
+            # Served the stale snapshot rather than waiting for the new one.
+            self.assertEqual(waiter_result, [1])
+        finally:
+            release.set()
+            rebuilder.join(5)
+            fingerprint_index._load = real_load
+        self.assertEqual(rebuilt, [2])
+
+    def test_the_very_first_load_does_block(self):
+        """With nothing cached there is nothing to serve, so waiting is correct."""
+        self._card("first_en")
+        self.db.commit()
+        self.assertEqual(len(fingerprint_index.get(self.db).rows), 1)
 
 
 @unittest.skipUnless(DEPS_AVAILABLE, "SQLAlchemy is not installed")
@@ -402,6 +610,187 @@ class UpsertInvalidationTests(unittest.TestCase):
         upsert_card(self.db, self._payload("https://example.invalid/a.png"))
         self.db.rollback()
         self.assertEqual(fingerprint_index._generation, before)
+
+    def test_a_savepoint_rollback_does_not_discard_a_pending_invalidation(self):
+        """after_rollback fires for ROLLBACK TO SAVEPOINT as well.
+
+        api/cards.py wraps parts of the custom-card migration in begin_nested().
+        Popping the flag there threw away an invalidation for a card the
+        enclosing transaction then committed anyway, so the index kept serving
+        the old catalogue for a full MAX_AGE_SECONDS. Over-invalidating costs
+        one rebuild; under-invalidating serves the wrong card.
+        """
+        before = fingerprint_index._generation
+        upsert_card(self.db, self._payload("https://example.invalid/a.png"))
+
+        savepoint = self.db.begin_nested()
+        self.db.add(Card(
+            id="scratch_en", tcg_card_id="scratch", name="scratch", number="9",
+            set_id="sv1", lang="en", is_custom=False,
+        ))
+        savepoint.rollback()
+
+        self.db.commit()
+        # The upserted card really is in the database...
+        self.assertEqual(
+            self.db.query(Card).filter(Card.id == "sv1-1_en").count(), 1
+        )
+        self.assertEqual(
+            self.db.query(Card).filter(Card.id == "scratch_en").count(), 0
+        )
+        # ...so the index must have been told.
+        self.assertGreater(fingerprint_index._generation, before)
+
+    def test_a_nested_savepoint_rollback_also_keeps_the_flag(self):
+        before = fingerprint_index._generation
+        upsert_card(self.db, self._payload("https://example.invalid/a.png"))
+        outer = self.db.begin_nested()
+        inner = self.db.begin_nested()
+        inner.rollback()
+        outer.rollback()
+        self.db.commit()
+        self.assertGreater(fingerprint_index._generation, before)
+
+    def test_the_three_field_by_field_writers_share_the_staleness_guard(self):
+        """The catalogue is written from more places than upsert_card.
+
+        api/cards.py's custom-to-API migration and api/collection.py's CSV
+        import cache both copied parsed fields onto an existing row one by one,
+        images_small included, which left the old artwork's fingerprint in
+        place. That is silent permanent corruption: photos of the OLD picture
+        matched at distance 0 and the backfill never revisited the row.
+        """
+        upsert_card(self.db, self._payload("https://example.invalid/a.png"))
+        self.db.commit()
+        self.db.query(Card).update({
+            "image_phash": _hash(3),
+            "image_phash_source": "https://example.invalid/a.png",
+        })
+        self.db.commit()
+        card = self.db.query(Card).one()
+
+        before = fingerprint_index._generation
+        apply_catalogue_fields(
+            self.db, card, self._payload("https://example.invalid/b.png")
+        )
+        self.db.commit()
+
+        self.assertEqual(card.images_small, "https://example.invalid/b.png")
+        self.assertIsNone(card.image_phash)
+        self.assertIsNone(card.image_phash_source)
+        self.assertGreater(fingerprint_index._generation, before)
+
+    def test_a_field_by_field_write_that_keeps_the_url_keeps_the_fingerprint(self):
+        upsert_card(self.db, self._payload("https://example.invalid/a.png"))
+        self.db.commit()
+        self.db.query(Card).update({
+            "image_phash": _hash(3),
+            "image_phash_source": "https://example.invalid/a.png",
+        })
+        self.db.commit()
+        card = self.db.query(Card).one()
+
+        apply_catalogue_fields(
+            self.db, card, self._payload("https://example.invalid/a.png")
+        )
+        self.db.commit()
+        self.assertEqual(card.image_phash, _hash(3))
+
+    def test_inserting_a_catalogue_card_also_tells_the_index(self):
+        """A new row carries no stale hash, but the index still has to learn of it."""
+        before = fingerprint_index._generation
+        add_catalogue_card(self.db, Card(
+            id="sv1-2_en", tcg_card_id="sv1-2", name="Card", number="2",
+            set_id="sv1", lang="en", is_custom=False,
+            images_small="https://example.invalid/c.png",
+        ))
+        self.assertEqual(fingerprint_index._generation, before)
+        self.db.commit()
+        self.assertGreater(fingerprint_index._generation, before)
+
+    def test_upsert_records_where_a_later_fingerprint_would_come_from(self):
+        """Clearing the hash must clear its provenance too.
+
+        Leaving the old source behind would make the row look "already tried"
+        to the backfill, and it would never be fingerprinted again.
+        """
+        upsert_card(self.db, self._payload("https://example.invalid/a.png"))
+        self.db.commit()
+        self.db.query(Card).update({
+            "image_phash": _hash(3),
+            "image_phash_source": "https://example.invalid/a.png",
+        })
+        self.db.commit()
+
+        upsert_card(self.db, self._payload("https://example.invalid/b.png"))
+        self.db.commit()
+        card = self.db.query(Card).one()
+        self.assertIsNone(card.image_phash)
+        self.assertIsNone(card.image_phash_source)
+
+
+@unittest.skipUnless(DEPS_AVAILABLE, "SQLAlchemy is not installed")
+class CommitVisibilityTests(unittest.TestCase):
+    """The index must not be invalidated until the rows are actually visible.
+
+    Uses a file-backed SQLite database and a genuinely separate connection,
+    because that is the only way to tell before_commit from after_commit: at
+    before_commit time the write is still private to the writing transaction, so
+    a rebuild triggered then would read the OLD rows and cache them as current.
+    The previous test compared the generation counter before and after
+    `db.commit()` returned, which both hooks satisfy.
+    """
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.url = "sqlite:///" + os.path.join(self.dir, "index.db")
+        self.engine = create_engine(self.url)
+        Base.metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine)
+        self.db = self.Session()
+        self.db.add_all([
+            Setting(key="tcgdex_sync_languages", value="en,de"),
+            Setting(key="tcgdex_digital_sets_enabled", value="false"),
+        ])
+        self.db.commit()
+        self.observer = create_engine(self.url)
+        fingerprint_index.reset()
+
+    def tearDown(self):
+        fingerprint_index.reset()
+        self.db.close()
+        self.engine.dispose()
+        self.observer.dispose()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_the_row_is_visible_to_other_connections_when_the_index_is_invalidated(self):
+        seen = []
+        real_invalidate = fingerprint_index.invalidate
+
+        def observing_invalidate():
+            with self.observer.connect() as conn:
+                seen.append(conn.execute(
+                    sa.text("select count(*) from cards where id = 'sv1-1_en'")
+                ).scalar())
+            real_invalidate()
+
+        fingerprint_index.invalidate = observing_invalidate
+        try:
+            upsert_card(self.db, {
+                "id": "sv1-1_en", "tcg_card_id": "sv1-1", "name": "Card",
+                "number": "1", "set_id": "sv1", "lang": "en", "is_custom": False,
+                "images_small": "https://example.invalid/a.png",
+                "images_large": "https://example.invalid/a.png",
+            })
+            self.db.commit()
+        finally:
+            fingerprint_index.invalidate = real_invalidate
+
+        self.assertEqual(
+            seen, [1],
+            "the index was invalidated while the write was still uncommitted, so "
+            "a rebuild racing it would cache the pre-commit catalogue",
+        )
 
 
 if __name__ == "__main__":
