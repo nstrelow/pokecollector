@@ -19,12 +19,25 @@ _DEFAULT_PRICE_SYNC_MINUTES = 30
 # honest estimate is "a healthy catalogue clears in about a day, a sick one
 # takes as long as it takes, a budget-limited batch at a time".
 #
-# The budget is well under the hour between runs, so max_instances=1 and
-# coalesce=True can no longer silently swallow a queue of skipped runs.
+# The budget is well under the hour between runs, so a healthy run is always
+# finished by the time the next one is due, and max_instances=1 never has
+# reason to skip an overlapping start.
+#
+# misfire_grace_time is set explicitly rather than left at APScheduler's
+# 1-second default. That default means a late run isn't queued at all: if the
+# scheduler's check for this job lands more than a second after its due time
+# (a slow prior run, GIL contention, the process briefly stalled), APScheduler
+# logs it as misfired and drops it outright, and the job simply waits for its
+# next hourly slot. coalesce=True never enters into it at 1 second -- there is
+# nothing to coalesce when a miss is never allowed to accumulate. The grace
+# period below is what actually gives coalesce=True something to do: if the
+# process is unresponsive for a few minutes, one or more due firings can build
+# up within it, and coalesce=True runs them once instead of back-to-back.
 _FINGERPRINT_BATCH_LIMIT = 2000
 _FINGERPRINT_RPS = 5.0
 _FINGERPRINT_INTERVAL_HOURS = 1
 _FINGERPRINT_TIME_BUDGET_SECONDS = 40 * 60.0
+_FINGERPRINT_MISFIRE_GRACE_SECONDS = 10 * 60
 
 
 def _get_full_sync_interval_days() -> int:
@@ -183,8 +196,9 @@ def run_fingerprint_backfill():
     a time, paced politely against TCGdex.
 
     Bounded by rows AND by wall clock, and it gives up early if the CDN is
-    plainly not answering. The run must finish inside the scheduler's interval
-    or coalesce=True quietly discards the runs it overlapped.
+    plainly not answering. The run is meant to finish inside the scheduler's
+    interval; see `_FINGERPRINT_MISFIRE_GRACE_SECONDS` above for what actually
+    happens on the rare run that does not.
     """
     from database import SessionLocal
     from services.fingerprint_backfill import run_backfill
@@ -287,6 +301,7 @@ def start_scheduler():
             replace_existing=True,
             max_instances=1,
             coalesce=True,
+            misfire_grace_time=_FINGERPRINT_MISFIRE_GRACE_SECONDS,
             next_run_time=now_utc + datetime.timedelta(minutes=10),
         )
 
