@@ -201,6 +201,67 @@ class FingerprintTests(unittest.TestCase):
         self.assertEqual(np.asarray(opened).shape[2], 3)
         self.assertIsNotNone(opened.getpixel((0, 0)))
 
+    def test_l_and_rgb_first_decodes_hash_identically(self):
+        """The equivalence api/recognize.py's `hash_bits(mode="L")` relies on.
+
+        That call exists purely to avoid materialising a throwaway RGB copy on
+        the LLM scanner's hot path -- it must not change a single output bit.
+        Sweeps source PIL mode (RGB, RGBA, L, LA, two P palette flavours, CMYK,
+        1-bit, I, F) crossed with every container format that can hold them
+        (PNG, TIFF, BMP, GIF-via-palette) plus lossy JPEG/WEBP re-encodes of an
+        RGB source, matching the "pixel-identical for every mode but YCbCr"
+        claim in `_hash_bits`'s docstring. YCbCr is excluded: Pillow's own
+        encoders silently rewrite it to RGB on save, so there is no file this
+        app's decoders would ever hand back in that mode to test against.
+        """
+        rng = np.random.default_rng(0)
+
+        def textured(seed, size):
+            w, h = size
+            rows, cols = np.mgrid[0:h, 0:w]
+            pixels = np.zeros((h, w, 3), dtype=np.uint8)
+            pixels[..., 0] = ((cols * 3 + rows * 2 + seed * 37) % 256)
+            pixels[..., 1] = ((rows * 5 + seed * 11) % 256)
+            pixels[..., 2] = ((cols * cols // 5 + seed * 53) % 256)
+            for _ in range(4):
+                cy, cx = int(rng.integers(0, h)), int(rng.integers(0, w))
+                r = int(rng.integers(10, max(11, min(w, h) // 2)))
+                mask = (rows - cy) ** 2 + (cols - cx) ** 2 <= r * r
+                pixels[mask] = int(rng.integers(0, 256))
+            return Image.fromarray(pixels)
+
+        compared = 0
+        for seed in range(30):
+            size = (60 + seed, 90 + seed * 2)
+            base = textured(seed, size)
+            for name, im, fmt in (
+                ("RGB", base, "PNG"),
+                ("RGBA", base.convert("RGBA"), "PNG"),
+                ("L", base.convert("L"), "PNG"),
+                ("LA", base.convert("LA"), "PNG"),
+                ("P_web", base.convert("P", palette=Image.WEB), "PNG"),
+                ("P_adaptive", base.convert("P", palette=Image.ADAPTIVE), "PNG"),
+                ("CMYK", base.convert("CMYK"), "TIFF"),
+                ("1", base.convert("1"), "PNG"),
+                ("I", base.convert("I"), "TIFF"),
+                ("F", base.convert("F"), "TIFF"),
+                ("RGB_jpeg", base, "JPEG"),
+                ("RGB_webp", base, "WEBP"),
+            ):
+                buf = io.BytesIO()
+                im.save(buf, fmt)
+                data = buf.getvalue()
+                with self.subTest(mode=name, seed=seed):
+                    rgb_first = card_fingerprint._hash_bits(
+                        card_fingerprint._open(data, mode="RGB")
+                    )
+                    direct_l = card_fingerprint._hash_bits(
+                        card_fingerprint._open(data, mode="L")
+                    )
+                    np.testing.assert_array_equal(rgb_first, direct_l)
+                compared += 1
+        self.assertGreater(compared, 250, "the sweep collapsed to almost nothing")
+
     def test_the_pixel_budget_boundary_admits_an_image_of_exactly_the_cap(self):
         """`> max_pixels`, not `>=`: the cap is a maximum, not a forbidden size."""
         with Image.open(io.BytesIO(_golden_image_bytes())) as im:

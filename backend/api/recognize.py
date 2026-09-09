@@ -617,10 +617,20 @@ def _perceptual_hash(image_bytes: bytes | None) -> tuple[bool, ...] | None:
     backs the persisted `cards.image_phash` column. Keeping one copy is the
     point: two implementations of the same hash that drift apart would make
     stored fingerprints silently incomparable with freshly computed ones.
+
+    Passes `mode="L"` because this hash is never persisted -- it only ever
+    scores a photo against up to `PHASH_CANDIDATE_LIMIT` reference images in
+    memory, one scan at a time. `card_fingerprint._open` normally materialises
+    RGB first because every *persisted* fingerprint must be computed that way;
+    here there is nothing to stay consistent with across restarts, so decoding
+    straight to L recovers the RGB copy's memory cost (measured there at
+    +415MB vs +277MB on one 48-megapixel input) without changing a single bit
+    of the result -- see `card_fingerprint._hash_bits` for the pixel-identity
+    argument this relies on.
     """
     from services.card_fingerprint import hash_bits
 
-    bits = hash_bits(image_bytes, max_pixels=MAX_REFERENCE_IMAGE_PIXELS)
+    bits = hash_bits(image_bytes, max_pixels=MAX_REFERENCE_IMAGE_PIXELS, mode="L")
     if bits is None:
         return None
     return tuple(bool(value) for value in bits)

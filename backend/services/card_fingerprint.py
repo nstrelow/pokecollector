@@ -246,17 +246,27 @@ def _hash_bits(img: Image.Image) -> np.ndarray:
     api/recognize.py's `_perceptual_hash` delegates here, so the LLM scanner's
     tiebreak and the persisted `cards.image_phash` can never drift apart.
 
-    Callers hand us an image that `_open` has already normalised to RGB, and
-    that normalisation is part of the definition -- not because it changes the
-    luma. It was previously claimed here that "Pillow's direct CMYK->L is not a
-    luma conversion at all"; that is false. Measured on Pillow 12.3,
-    `im.convert("L")` and `im.convert("RGB").convert("L")` are pixel-identical
-    (max absolute difference 0) for RGB, CMYK, P (adaptive, web and
-    transparency palettes), RGBA including fully transparent pixels, LA, L, 1,
-    I, I;16, F and HSV. Only YCbCr differs, by at most 1. The real reasons to
-    keep RGB-first are that every fingerprint already in every install's
-    database was computed this way, and that `convert("RGB")` also gives back a
-    fully materialised image that no longer depends on the source file handle.
+    Callers normally hand us an image that `_open` has already normalised to
+    RGB, and for `fingerprint_reference`/`fingerprint_photo` that normalisation
+    is part of the definition -- not because it changes the luma, but because
+    every fingerprint already in every install's database was computed after
+    it, and `convert("RGB")` also gives back a fully materialised image that no
+    longer depends on the source file handle. It was previously claimed here
+    that "Pillow's direct CMYK->L is not a luma conversion at all"; that is
+    false. Measured on Pillow 12.3, `im.convert("L")` and
+    `im.convert("RGB").convert("L")` are pixel-identical (max absolute
+    difference 0) for RGB, CMYK, P (adaptive, web and transparency palettes),
+    RGBA including fully transparent pixels, LA, L, 1, I, I;16, F and HSV. Only
+    YCbCr differs, by at most 1.
+
+    `hash_bits(mode="L")` -- used only by api/recognize.py's `_perceptual_hash`,
+    whose output is never persisted -- hands this an image `_open` already
+    decoded straight to L instead. Because of the equivalence above that is a
+    memory optimisation, not a different definition: `img.convert("L")` here
+    is then a same-mode copy and produces the identical bits, for every mode
+    this app has been shown to receive except a source that is natively
+    YCbCr (rare TIFF variants; never a photo upload or a TCGdex render in
+    practice) -- see `test_l_and_rgb_first_decodes_hash_identically`.
     """
     pixels = np.asarray(
         img.convert("L").resize((32, 32), Image.Resampling.LANCZOS), dtype=float
@@ -284,27 +294,46 @@ def _safe_hash_bits(img: Image.Image) -> np.ndarray | None:
 
 
 def hash_bits(
-    image_bytes: bytes | None, max_pixels: int | None = None
+    image_bytes: bytes | None,
+    max_pixels: int | None = None,
+    *,
+    mode: str = "RGB",
 ) -> np.ndarray | None:
-    """Decode `image_bytes` and return its 64 pHash bits, or None if unusable."""
+    """Decode `image_bytes` and return its 64 pHash bits, or None if unusable.
+
+    `mode` is "RGB" for every persisted use. api/recognize.py's
+    `_perceptual_hash` -- an ephemeral in-memory tiebreak, never written to
+    `cards.image_phash` -- passes `mode="L"` instead, which skips materialising
+    a full RGB copy before `_hash_bits` reduces it to L anyway. See `_open` and
+    `_hash_bits` for why that is memory-only and not a different hash.
+    """
     if not image_bytes:
         return None
-    img = _open(image_bytes, max_pixels)
+    img = _open(image_bytes, max_pixels, mode=mode)
     if img is None:
         return None
     return _safe_hash_bits(img)
 
 
-def _open(image_bytes: bytes, max_pixels: int | None = None) -> Image.Image | None:
-    """Decode to a materialised RGB image, or None if it is unusable or huge.
+def _open(
+    image_bytes: bytes, max_pixels: int | None = None, *, mode: str = "RGB"
+) -> Image.Image | None:
+    """Decode to a materialised image in `mode`, or None if unusable or huge.
 
-    No trailing `.copy()`. `im.convert("RGB")` already calls `load()` and
+    No trailing `.copy()`. `im.convert(mode)` already calls `load()` and
     returns a new, independent image, so the copy was a second full-resolution
     buffer for nothing. Measured peak RSS for one 48-megapixel PNG through the
     full hash: +277MB converting straight to L, +415MB via RGB, +550MB via RGB
     plus the copy. api/recognize.py hashes up to 8 reference images in sequence
     and `fingerprint_cards` runs 4 of these concurrently, so the copy was worth
     roughly half a gigabyte of transient peak at MAX_REFERENCE_IMAGE_PIXELS.
+
+    `mode` defaults to RGB because `fingerprint_reference` and
+    `fingerprint_photo` -- whose output is persisted to `cards.image_phash` --
+    must keep asking for exactly what every already-stored fingerprint was
+    computed from. Only `hash_bits(mode="L")` passes anything else, recovering
+    the +415MB-vs-277MB gap above for the one caller whose result is never
+    persisted. See `_hash_bits` for why that does not change the hash.
     """
     # Resolved at call time, not bound as a default, so tests can patch the cap.
     max_pixels = MAX_PIXELS if max_pixels is None else max_pixels
@@ -315,7 +344,7 @@ def _open(image_bytes: bytes, max_pixels: int | None = None) -> Image.Image | No
                 width, height = im.size
                 if width <= 0 or height <= 0 or width * height > max_pixels:
                     return None
-                return im.convert("RGB")
+                return im.convert(mode)
     except Exception:
         return None
 
