@@ -4,10 +4,12 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 try:
+    import numpy as np
     import sqlalchemy as sa
     from sqlalchemy import create_engine
     from sqlalchemy.orm import sessionmaker
@@ -653,10 +655,123 @@ class FingerprintIndexTests(unittest.TestCase):
         self.assertEqual(rebuilt, [2])
 
     def test_the_very_first_load_does_block(self):
-        """With nothing cached there is nothing to serve, so waiting is correct."""
+        """With nothing cached there is nothing to serve, so waiting is correct.
+
+        Single-threaded, this only proves `get()` returns the right row
+        count -- true whether a concurrent caller blocks on the lock or
+        takes an immediate "nothing yet" shortcut, since there is only one
+        caller to observe it. Actually exercising `blocking = snapshot is
+        None` needs a second, genuinely concurrent caller: with that mutated
+        to a hardcoded `blocking = False`, the loser of the race for the
+        very first load would fail to acquire the lock and fall straight
+        through to the `_EMPTY` sentinel instead of waiting for the rebuild
+        already in flight, returning stale garbage (0 rows, not-ready)
+        instead of the real answer.
+        """
         self._card("first_en")
         self.db.commit()
-        self.assertEqual(len(fingerprint_index.get(self.db).rows), 1)
+
+        started = threading.Event()
+        release = threading.Event()
+        real_load = fingerprint_index._load
+
+        def slow_load(db):
+            started.set()
+            release.wait(5)
+            return real_load(db)
+
+        fingerprint_index._load = slow_load
+        first_result = []
+        second_result = []
+        try:
+            first = threading.Thread(
+                target=lambda: first_result.append(
+                    fingerprint_index.get(self.Session())
+                )
+            )
+            first.start()
+            self.assertTrue(started.wait(5), "the rebuild never started")
+
+            second = threading.Thread(
+                target=lambda: second_result.append(
+                    fingerprint_index.get(self.Session())
+                )
+            )
+            second.start()
+            second.join(0.3)
+            self.assertTrue(
+                second.is_alive(),
+                "the second caller returned before the in-flight rebuild "
+                "finished -- it must block, not take an early empty answer",
+            )
+
+            release.set()
+            second.join(5)
+            first.join(5)
+        finally:
+            release.set()
+            fingerprint_index._load = real_load
+
+        self.assertEqual(len(first_result), 1)
+        self.assertEqual(len(second_result), 1)
+        self.assertEqual(len(second_result[0].rows), 1)
+
+    def test_a_fresh_empty_snapshot_is_preferred_over_a_stale_one(self):
+        """A snapshot with 0 rows is a legitimate, current answer, not a dud.
+
+        `Snapshot` used to define `__len__`, so a legitimately-rebuilt
+        zero-row snapshot was falsy. The "someone else is rebuilding" branch
+        of `get()` picked between the global `_snapshot` and its own stale
+        local copy with `_snapshot or snapshot or _EMPTY` -- so once a
+        concurrent rebuild finished with an empty result but before it
+        released the lock, that branch discarded the fresh empty snapshot in
+        favour of the stale non-empty one it was replacing, exactly
+        backwards.
+
+        Reproduced single-threaded. `threading.Lock.acquire` checks whether
+        the lock is held, not who holds it, so holding it in this thread is
+        enough to force `get()` down the "someone else is rebuilding" branch.
+        The global is swapped to the fresh empty snapshot from inside
+        `_is_stale`, the one hook `get()` calls between capturing its local
+        `snapshot` and re-reading the global -- exactly the window a real
+        concurrent rebuild finishing would land in.
+        """
+        stale = fingerprint_index.Snapshot(
+            packed=np.zeros((1, fingerprint_index.HASH_BYTES), dtype=np.uint8),
+            rows=({"id": "stale_en"},),
+            built_at=0.0,
+            generation=-99,  # guaranteed to differ from the live generation
+            version="stale-version",
+            ready=False,
+        )
+        fresh_empty = fingerprint_index.Snapshot(
+            packed=np.empty((0, fingerprint_index.HASH_BYTES), dtype=np.uint8),
+            rows=(),
+            built_at=999999999.0,
+            generation=fingerprint_index._generation,
+            version=fingerprint_index.read_version(self.db),
+            ready=False,
+        )
+        fingerprint_index._snapshot = stale
+        real_is_stale = fingerprint_index._is_stale
+
+        def racing_is_stale(snapshot, db):
+            is_stale = real_is_stale(snapshot, db)
+            # The concurrent rebuild finishes and updates the global in the
+            # window between this staleness check and the lock attempt below.
+            fingerprint_index._snapshot = fresh_empty
+            return is_stale
+
+        fingerprint_index._lock.acquire()
+        try:
+            with patch.object(fingerprint_index, "_is_stale", racing_is_stale):
+                result = fingerprint_index.get(self.db)
+        finally:
+            fingerprint_index._lock.release()
+
+        self.assertEqual(len(result.rows), 0)
+        self.assertEqual(result.generation, fresh_empty.generation)
+        self.assertNotEqual(result.generation, fingerprint_index._EMPTY.generation)
 
 
 @unittest.skipUnless(DEPS_AVAILABLE, "SQLAlchemy is not installed")

@@ -85,8 +85,14 @@ class Snapshot:
     # endpoint can check it without a second aggregate query per request.
     ready: bool = False
 
-    def __len__(self) -> int:
-        return len(self.rows)
+    # Deliberately no __len__. A dataclass with one falls back to it for
+    # truthiness, and a legitimately-rebuilt zero-row snapshot -- an
+    # un-backfilled catalogue, or every fingerprint filtered out as malformed
+    # -- has len() 0 and so is falsy despite being exactly what `_load` just
+    # built. `snapshot or _EMPTY` would then discard that fresh empty
+    # snapshot in favour of the stale `_EMPTY` sentinel (generation -1,
+    # built_at 0.0). Callers that mean "is there a cached snapshot" must
+    # check identity against None, not boolean-ness.
 
 
 _EMPTY = Snapshot(
@@ -292,17 +298,20 @@ def get(db: Session) -> Snapshot:
     global _snapshot
     snapshot = _snapshot
     if not _is_stale(snapshot, db):
-        return snapshot or _EMPTY
+        return snapshot if snapshot is not None else _EMPTY
 
     blocking = snapshot is None
     if not _lock.acquire(blocking=blocking):
         # Someone else is rebuilding and we have something to answer with.
-        return _snapshot or snapshot or _EMPTY
+        for candidate in (_snapshot, snapshot):
+            if candidate is not None:
+                return candidate
+        return _EMPTY
     try:
         # Re-check inside the lock; another request may have just rebuilt.
         if _is_stale(_snapshot, db):
             _snapshot = _load(db)
-        return _snapshot or _EMPTY
+        return _snapshot if _snapshot is not None else _EMPTY
     finally:
         _lock.release()
 
