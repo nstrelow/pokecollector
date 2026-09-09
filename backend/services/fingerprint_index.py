@@ -186,9 +186,24 @@ def _load(db: Session) -> Snapshot:
     generation = _generation
     version = read_version(db)
     indexable = indexable_card_filter(db)
-    with_image = int(
-        db.query(func.count(Card.images_small)).filter(indexable).scalar() or 0
+    # Same numerator `coverage()` reports to /status: rows that have BOTH
+    # artwork and a hash. `len(usable)` below is not it -- `usable` also
+    # admits rows with a hash but no `images_small` (a data anomaly: a writer
+    # that clears artwork after it was fingerprinted, without also clearing
+    # the hash), and counting those in readiness let /recognize/local accept
+    # requests while /status reported not ready off the identical snapshot.
+    with_image, with_hash = (
+        db.query(
+            func.count(Card.images_small),
+            func.count(case(
+                (and_(Card.images_small.isnot(None), Card.image_phash.isnot(None)), 1)
+            )),
+        )
+        .filter(indexable)
+        .one()
     )
+    with_image = int(with_image or 0)
+    with_hash = int(with_hash or 0)
 
     rows = (
         db.query(
@@ -235,7 +250,7 @@ def _load(db: Session) -> Snapshot:
         built_at=time.time(),
         generation=generation,
         version=version,
-        ready=_is_ready(len(usable), with_image),
+        ready=_is_ready(with_hash, with_image),
     )
     logger.info(
         "fingerprint index: loaded %d cards of %d with artwork (ready=%s)",

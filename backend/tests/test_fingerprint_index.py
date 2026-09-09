@@ -507,6 +507,34 @@ class FingerprintIndexTests(unittest.TestCase):
         self.assertTrue(fingerprint_index.get(self.db).ready)
         self.assertTrue(fingerprint_index.coverage(self.db)["ready"])
 
+    def test_readiness_and_coverage_agree_when_a_hash_outlives_its_artwork(self):
+        """The two numerators must count the same thing, not just agree by luck.
+
+        `_load`'s readiness used to admit a row with a hash but no
+        `images_small` (the same anomaly `test_coverage_can_never_exceed_one`
+        covers for `coverage()`: a writer that clears artwork without also
+        clearing the hash) into its numerator, while `coverage()` never did.
+        Here every real card is fingerprinted-but-unindexable-as-coverage: zero
+        of them actually have both artwork and a hash. 500 orphaned rows (hash,
+        no artwork) alone clear READY_MIN_CARDS, so the old code called this
+        catalogue ready off nothing but the anomaly, while /status -- built
+        from `coverage()` -- correctly still said no. `/api/cards/recognize/
+        local` and its own `/status` must not be able to disagree that way.
+        """
+        for i in range(fingerprint_index.READY_MIN_CARDS):
+            self._card(f"real-{i:05d}_en", image_phash=None)
+        for i in range(fingerprint_index.READY_MIN_CARDS):
+            self._card(f"orphan-{i:05d}_en", images_small=None)
+        self.db.commit()
+
+        stats = fingerprint_index.coverage(self.db)
+        self.assertEqual(stats["cards_fingerprinted"], 0)
+        self.assertFalse(stats["ready"])
+        self.assertEqual(
+            fingerprint_index.get(self.db).ready, stats["ready"],
+            "the index and /status must not disagree about readiness",
+        )
+
     def test_the_readiness_thresholds_have_not_drifted(self):
         """Pin READY_MIN_CARDS and READY_COVERAGE to literals, not each other.
 
