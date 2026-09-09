@@ -32,14 +32,17 @@ class FingerprintSchedulerTests(unittest.TestCase):
         APScheduler is configured max_instances=1, coalesce=True: a run that
         overruns means the runs it overlapped are silently discarded, so the
         budget is what makes an "hourly" job actually hourly.
+
+        Expectations are pinned as literals, not read back off the module's
+        own constants: asserting `kwargs["limit"] == scheduler._FINGERPRINT_BATCH_LIMIT`
+        only proves the job forwards whatever the constant currently is, and
+        stays green no matter what that value is changed to.
         """
         _db, run_backfill = self._run()
         kwargs = run_backfill.call_args.kwargs
-        self.assertEqual(kwargs["limit"], scheduler._FINGERPRINT_BATCH_LIMIT)
-        self.assertEqual(kwargs["rps"], scheduler._FINGERPRINT_RPS)
-        self.assertEqual(
-            kwargs["time_budget"], scheduler._FINGERPRINT_TIME_BUDGET_SECONDS
-        )
+        self.assertEqual(kwargs["limit"], 2000)
+        self.assertEqual(kwargs["rps"], 5.0)
+        self.assertEqual(kwargs["time_budget"], 2400.0)
 
     def test_the_budget_fits_inside_the_interval_between_runs(self):
         interval = datetime.timedelta(

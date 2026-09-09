@@ -273,15 +273,22 @@ class LocalRecognitionApiTests(unittest.TestCase):
 
         "high" is everything up to and including 8 -- half of MAX_DISTANCE --
         and "medium" runs to MAX_DISTANCE itself.
+
+        Boundaries are pinned as literals, not read back off the constants
+        under test: a test that asks `_confidence(HIGH_CONFIDENCE_DISTANCE)`
+        for "high" stays green no matter what `HIGH_CONFIDENCE_DISTANCE` is
+        changed to, because the expectation moves with the very value it is
+        supposed to be pinning. `test_the_tuned_constants_have_not_drifted` in
+        test_card_fingerprint.py pins MIN_MARGIN and MAX_DISTANCE the same way.
         """
         from api.recognize_local import HIGH_CONFIDENCE_DISTANCE, _confidence
-        from services.card_fingerprint import MAX_DISTANCE
 
+        self.assertEqual(HIGH_CONFIDENCE_DISTANCE, 8)
         self.assertEqual(_confidence(0), "high")
-        self.assertEqual(_confidence(HIGH_CONFIDENCE_DISTANCE), "high")
-        self.assertEqual(_confidence(HIGH_CONFIDENCE_DISTANCE + 1), "medium")
-        self.assertEqual(_confidence(MAX_DISTANCE), "medium")
-        self.assertEqual(_confidence(MAX_DISTANCE + 1), "low")
+        self.assertEqual(_confidence(8), "high")
+        self.assertEqual(_confidence(9), "medium")
+        self.assertEqual(_confidence(12), "medium")
+        self.assertEqual(_confidence(13), "low")
 
     # --- status -------------------------------------------------------------
 
