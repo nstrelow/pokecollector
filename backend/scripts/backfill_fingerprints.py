@@ -90,8 +90,14 @@ def main() -> int:
         print(f"  fingerprinted          {stats['cards_fingerprinted']:>8,}"
               f"  ({stats['coverage']:.1%})")
         print(f"  ready for scanning     {'yes' if stats['ready'] else 'not yet':>8}")
-        print("\nA running server picks these up on its next scan: this run "
-              "bumped the shared index version marker in the settings table.")
+        # Matches fingerprint_cards' own condition for calling bump_version: a
+        # run that only wrote negative-cache provenance (no hash stored,
+        # cleared or withheld) never bumps the marker, so the message must not
+        # claim it did.
+        if result["stored"] or result["cleared"] or result["placeholders"]:
+            print("\nA running server picks these up on its next scan: this "
+                  "run bumped the shared index version marker in the "
+                  "settings table.")
         return 0
     finally:
         db.close()
