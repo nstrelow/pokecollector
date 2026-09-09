@@ -582,6 +582,25 @@ class SearchTests(unittest.TestCase):
                         max_distance=SHORTLIST_MAX_DISTANCE)
         self.assertEqual(ranked[0], (2, 0))
 
+    def test_the_shortlist_distance_boundary_is_inclusive(self):
+        """24 is the furthest entry the shortlist keeps, not the first it drops.
+
+        Pinned as a literal 24, not `SHORTLIST_MAX_DISTANCE`: a test that reads
+        the cutoff back off the constant stays green no matter what the
+        constant is changed to (an independent mutation run showed 24 -> 64
+        surviving the whole suite), when the point is to prove where today's
+        line actually sits.
+        """
+        query = bytes(HASH_BYTES)
+        exactly_24 = bytes([0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00])
+        exactly_25 = bytes([0xFF, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0x00, 0x00])
+        self.assertEqual(_distance(query, exactly_24), 24)
+        self.assertEqual(_distance(query, exactly_25), 25)
+
+        index = self._index([exactly_24, exactly_25])
+        ranked = search(query, index, limit=2, max_distance=24)
+        self.assertEqual(ranked, [(0, 24)])
+
     def test_the_shortlist_is_exactly_the_twelve_nearest_in_a_fixed_order(self):
         """Ranking must be total and reproducible, not whatever argpartition left.
 
@@ -669,6 +688,7 @@ class SearchTests(unittest.TestCase):
         """
         self.assertEqual(card_fingerprint.MIN_MARGIN, 5)
         self.assertEqual(MAX_DISTANCE, 12)
+        self.assertEqual(SHORTLIST_MAX_DISTANCE, 24)
 
     def test_the_margin_boundary_is_inclusive(self):
         """5 is the smallest margin that counts, not the first that fails.
