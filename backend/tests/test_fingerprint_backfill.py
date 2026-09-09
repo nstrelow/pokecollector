@@ -296,6 +296,36 @@ class FingerprintBackfillTests(unittest.TestCase):
         self.assertNotEqual(stored["a_en"], stored["b_en"])
         self.assertNotEqual(fingerprint_index.read_version(self.db), before)
 
+    def test_the_final_progress_callback_reports_the_trailing_batch(self):
+        """A run that never hits a mid-run flush must still report once.
+
+        on_progress used to be called only from inside the loop, on whichever
+        flush COMMIT_BATCH or MAX_FLUSH_SECONDS triggered. A run short enough
+        to never trigger either -- the common case for a small catalogue, or
+        the tail of any run -- flushed everything in the trailing flush() after
+        the loop and never called on_progress at all, so the CLI's last
+        printed line was stale.
+        """
+        total = 5
+        responses = {}
+        for i in range(total):
+            self._add(f"sv1-{i:03d}_en")
+            responses[self._url(f"sv1-{i:03d}_en")] = \
+                fingerprint_backfill.Download(_png(i))
+
+        calls = []
+        result = self._run(responses, on_progress=lambda *args: calls.append(args))
+
+        self.assertEqual(
+            len(calls), 1, "exactly one callback for a run under COMMIT_BATCH"
+        )
+        index, total_rows, stored, skipped, cleared = calls[0]
+        self.assertEqual(index, total)
+        self.assertEqual(total_rows, total)
+        self.assertEqual(stored, result["stored"])
+        self.assertEqual(skipped, result["skipped"])
+        self.assertEqual(cleared, result["cleared"])
+
     def test_an_unreachable_cdn_never_destroys_an_existing_fingerprint(self):
         """A refresh must not turn a network blip into data loss."""
         self._add("a_en", image_phash=b"\x07" * 8,
@@ -398,6 +428,36 @@ class FingerprintBackfillTests(unittest.TestCase):
             self.db.query(Card).filter(Card.image_phash.isnot(None)).count(), count
         )
 
+    def test_many_rows_sharing_one_real_url_is_not_a_placeholder(self):
+        """Cross-language artwork fallback must never be mistaken for one.
+
+        Several `cards` rows legitimately share a single `images_small` URL
+        when a language has no artwork of its own -- 5,299 German rows point
+        at English artwork on the real catalogue today. Counting *rows* per
+        digest would eventually misclassify that as a placeholder once enough
+        rows shared one real URL; a placeholder is many *different* URLs
+        answering with identical bytes, not the same URL fetched many times.
+        This run shares one URL across more than PLACEHOLDER_REPEATS rows and
+        proves none of them get written off.
+        """
+        count = fingerprint_backfill.PLACEHOLDER_REPEATS + 5
+        shared_url = "https://example.invalid/shared-fallback.png"
+        art = _png(123)
+        for i in range(count):
+            self._add(f"fallback-{i:03d}_de", lang="de", images_small=shared_url)
+        responses = {shared_url: fingerprint_backfill.Download(art)}
+
+        result = self._run(responses)
+
+        self.assertEqual(result["placeholders"], 0)
+        self.assertEqual(result["placeholders_undone"], 0)
+        self.assertEqual(result["stored"], count)
+        hashes = {
+            card.image_phash for card in self.db.query(Card)
+            if card.image_phash is not None
+        }
+        self.assertEqual(len(hashes), 1, "every row shares the one real hash")
+
     def test_a_discarded_placeholder_is_not_downloaded_again_next_hour(self):
         count = fingerprint_backfill.PLACEHOLDER_REPEATS + 2
         placeholder = _png(42)
@@ -461,8 +521,17 @@ class FingerprintBackfillTests(unittest.TestCase):
         )
 
     def test_a_run_gives_up_when_the_cdn_is_plainly_not_answering(self):
-        """A circuit breaker, so a dead CDN costs one sample and not a whole hour."""
-        total = fingerprint_backfill.BREAKER_MIN_ATTEMPTS * 3
+        """A circuit breaker, so a dead CDN costs one sample and not a whole hour.
+
+        BREAKER_MIN_ATTEMPTS and BREAKER_FAILURE_RATE are pinned as literals,
+        and `total`/the upper bound below are literals derived from them, not
+        read back off the constants: deriving everything from the constants
+        under test would keep this test green for any value they were changed
+        to, when the point is to prove where today's line sits.
+        """
+        self.assertEqual(fingerprint_backfill.BREAKER_MIN_ATTEMPTS, 50)
+        self.assertEqual(fingerprint_backfill.BREAKER_FAILURE_RATE, 0.5)
+        total = 150
         for i in range(total):
             self._add(f"sv1-{i:03d}_en")
         attempted = []
@@ -479,9 +548,7 @@ class FingerprintBackfillTests(unittest.TestCase):
         self.assertTrue(result["stopped_early"])
         self.assertIn("failure rate", result["stopped_early"])
         self.assertLess(len(attempted), total)
-        self.assertLess(
-            len(attempted), fingerprint_backfill.BREAKER_MIN_ATTEMPTS * 2
-        )
+        self.assertLess(len(attempted), 100)
 
     def test_a_403_wave_is_retried_counts_as_failure_and_leaves_provenance_null(self):
         """End to end, through the real download_image/ABSENT_STATUSES path.
@@ -642,6 +709,43 @@ class FingerprintBackfillTests(unittest.TestCase):
             event.remove(self.engine, "before_cursor_execute", record)
 
         self.assertEqual(result["stored"], total)
+        self.assertLess(len(updates), total // 4)
+
+    def test_negative_cache_writes_are_also_batched_not_one_per_card(self):
+        """The provenance-only path, which the success-only test above misses.
+
+        Grouping by the full column/value tuple only coalesced rows that
+        happened to share the exact same value -- for a provenance-only write
+        that value is the card's own URL, so 200 real-world absent cards with
+        200 distinct URLs used to cost close to 200 UPDATE statements even
+        though the successful-hash path above was already batched. Routing
+        provenance-only writes through their own bulk_update_mappings call
+        must not depend on the URLs matching.
+        """
+        total = 40
+        responses = {}
+        for i in range(total):
+            self._add(f"sv1-{i:03d}_en")
+            responses[self._url(f"sv1-{i:03d}_en")] = \
+                fingerprint_backfill.Download(None, absent=True)
+
+        updates = []
+
+        def record(conn, cursor, statement, parameters, *rest):
+            if statement.lstrip().upper().startswith("UPDATE CARDS"):
+                updates.append(statement)
+
+        event.listen(self.engine, "before_cursor_execute", record)
+        try:
+            result = self._run(responses)
+        finally:
+            event.remove(self.engine, "before_cursor_execute", record)
+
+        self.assertEqual(result["skipped"], total)
+        self.assertEqual(
+            self.db.query(Card).filter(Card.image_phash_source.isnot(None)).count(),
+            total,
+        )
         self.assertLess(len(updates), total // 4)
 
     # --- download rules -----------------------------------------------------

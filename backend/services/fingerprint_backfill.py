@@ -33,7 +33,7 @@ import logging
 import random
 import threading
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -80,6 +80,15 @@ ABSENT_STATUSES = {400, 404, 410}
 # identical hash and collide at distance 0 at the top of every shortlist. Real
 # distinct card renders are never byte-identical, so repeated identical
 # downloads within one run are treated as a placeholder and discarded.
+#
+# The count that matters is distinct URLs, not rows. This app has legitimate
+# cross-language artwork fallback: several `cards` rows share one
+# `images_small` URL when a language has no artwork of its own, and every one
+# of them downloads the same bytes by design. Counting rows would eventually
+# misclassify that as a placeholder once enough rows shared one real URL;
+# counting distinct URLs only fires when many *different* URLs all answer with
+# the same bytes, which is what an "image unavailable" render actually looks
+# like.
 PLACEHOLDER_REPEATS = 8
 
 # Circuit breaker. Once this many cards have been attempted, a run whose
@@ -136,8 +145,15 @@ def download_image(
                     delay = max(delay, min(float(retry_after), 60.0))
                 except ValueError:
                     pass
-        except Exception:
-            pass
+        except Exception as exc:
+            # DNS, TLS and timeout failures are otherwise indistinguishable
+            # from each other in the run's aggregate summary. debug, not
+            # warning: a single attempt failing is routine on a free CDN and
+            # is usually followed by a successful retry below.
+            logger.debug(
+                "fingerprint backfill: attempt %d/%d for %s failed: %r",
+                attempt + 1, attempts, url, exc,
+            )
         if attempt < attempts - 1:
             time.sleep(delay + random.random() * 0.5)
             delay = min(delay * 2, 20.0)
@@ -158,10 +174,20 @@ def stale_fingerprint_filter():
 
     A NULL `image_phash_source` also matches: it means "never attempted", which
     is every row on an install that predates the column.
+
+    Uses `IS DISTINCT FROM`, not `!=`. The only caller, `pending_cards`, always
+    ANDs this with `images_small IS NOT NULL`, so today `!=` never actually sees
+    a NULL `images_small` to misbehave on. But `!=` against a NULL operand
+    evaluates to NULL rather than true, which would silently treat a row as
+    "not stale" -- excluded from the queue -- the moment a future caller reuses
+    this helper without that same guard, or `images_small` is cleared out from
+    under a row whose stale `image_phash_source` still names the old URL.
+    `IS DISTINCT FROM` treats NULL as an ordinary comparable value, matching
+    what "provenance differs from the current URL" actually means.
     """
     return or_(
         Card.image_phash_source.is_(None),
-        Card.image_phash_source != Card.images_small,
+        Card.image_phash_source.is_distinct_from(Card.images_small),
     )
 
 
@@ -215,27 +241,31 @@ def _store(db: Session, updates: list[tuple[str, dict]]) -> None:
     """Apply one batch of per-card column updates in as few round trips as possible.
 
     Was one UPDATE statement per card -- 2,000 round trips for one scheduled
-    run. Cards sharing the same set of values (all the successes with the same
-    provenance shape, all the negative-cache writes) are grouped, so a batch
-    costs a handful of statements instead of one per row.
+    run. `bulk_update_mappings` batches by the *set of columns* a row writes,
+    not by their values, so it is enough to split rows into the two column
+    shapes this module ever produces and hand each list to its own call: every
+    row that sets `image_phash` (a success, a refresh clear, a placeholder
+    undo) goes out together, and every row that only records provenance (a
+    404, an undecodable render) goes out together, regardless of how many
+    distinct URLs are among them.
     """
     if not updates:
         return
     per_card: list[dict] = []
-    grouped: dict[tuple, list[str]] = defaultdict(list)
+    provenance_only: list[dict] = []
     for card_id, values in updates:
         if "image_phash" in values:
-            # A distinct hash per card cannot be grouped by value, but it can
-            # still go out as one executemany instead of one statement each.
             per_card.append({"id": card_id, **values})
         else:
-            grouped[tuple(sorted(values.items()))].append(card_id)
+            # Every card carries its own URL, so grouping by value used to
+            # mean grouping by URL -- one statement per distinct URL, close to
+            # one per row. bulk_update_mappings still sends this whole list as
+            # one executemany because it groups by column set, not by value.
+            provenance_only.append({"id": card_id, **values})
     if per_card:
         db.bulk_update_mappings(Card, per_card)
-    for key, card_ids in grouped.items():
-        db.query(Card).filter(Card.id.in_(card_ids)).update(
-            dict(key), synchronize_session=False
-        )
+    if provenance_only:
+        db.bulk_update_mappings(Card, provenance_only)
     db.commit()
 
 
@@ -305,7 +335,11 @@ def fingerprint_cards(
     stored = skipped = cleared = 0
     # (card_id, column values, content digest or None)
     pending: list[tuple[str, dict, str | None]] = []
-    digest_counts: Counter = Counter()
+    # Distinct source URLs seen for each content digest, not a row count -- see
+    # PLACEHOLDER_REPEATS. Many rows legitimately share one URL (cross-language
+    # artwork fallback); a placeholder is many different URLs answering with
+    # the same bytes.
+    digest_urls: dict[str, set[str]] = defaultdict(set)
     stored_by_digest: dict[str, list[str]] = defaultdict(list)
     last_flush = time.monotonic()
 
@@ -318,7 +352,7 @@ def fingerprint_cards(
         for card_id, values, content_digest in pending:
             if (
                 content_digest is not None
-                and digest_counts[content_digest] > PLACEHOLDER_REPEATS
+                and len(digest_urls[content_digest]) > PLACEHOLDER_REPEATS
             ):
                 continue
             keep.append((card_id, values))
@@ -399,7 +433,7 @@ def fingerprint_cards(
                     pending.append((card_id, {"image_phash_source": url}, None))
                     skipped += 1
                 else:
-                    digest_counts[content_digest] += 1
+                    digest_urls[content_digest].add(url)
                     cards_by_digest[content_digest].append(card_id)
                     pending.append(
                         (card_id,
@@ -415,14 +449,24 @@ def fingerprint_cards(
                         on_progress(index, len(rows), stored, skipped, cleared)
 
     flush()
+    if on_progress:
+        # The loop above only calls back on a mid-run flush; a run that ends
+        # exactly on a trailing partial batch would otherwise never report its
+        # final counters at all.
+        on_progress(len(rows), len(rows), stored, skipped, cleared)
 
     # A placeholder can only be recognised once it has repeated, so the first
     # few copies may already have been committed. Take them back out -- and
     # negative-cache every card that hit it, withheld or not, because serving a
     # placeholder is what this URL does and re-downloading it hourly achieves
     # nothing. `--refresh` is the way back if a CDN outage ever poisons this.
-    poisoned = [d for d, count in digest_counts.items() if count > PLACEHOLDER_REPEATS]
-    withheld = sum(digest_counts[d] for d in poisoned)
+    #
+    # Poisoning is decided on distinct URLs (see PLACEHOLDER_REPEATS); `withheld`
+    # itself stays a row count, since that is what it costs the catalogue.
+    poisoned = [
+        d for d, urls in digest_urls.items() if len(urls) > PLACEHOLDER_REPEATS
+    ]
+    withheld = sum(len(cards_by_digest[d]) for d in poisoned)
     undone = 0
     if poisoned:
         affected = [cid for d in poisoned for cid in cards_by_digest[d]]
