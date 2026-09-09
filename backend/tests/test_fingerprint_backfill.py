@@ -55,6 +55,34 @@ class _FrozenTime:
         pass
 
 
+class _SyncPool:
+    """A ThreadPoolExecutor stand-in that runs every task synchronously.
+
+    `fingerprint_cards` downloads on worker threads and checks the flush
+    clock on the consuming thread, and with a virtual clock whose `sleep`
+    returns instantly (no real waiting), a real ThreadPoolExecutor can race
+    every download to completion before the consumer inspects even the
+    first result -- so by the time any flush check runs, the clock already
+    reflects every row's sleep, not just the rows genuinely processed so
+    far. Tests that pin an exact flush boundary need the two to interleave
+    the way they would with a real, wall-clock-bound download, which this
+    provides by making `map` a plain generator: the consumer pulls a result
+    exactly when it asks for one, and nothing runs ahead of it.
+    """
+
+    def __init__(self, max_workers=None):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def map(self, fn, iterable):
+        return (fn(item) for item in iterable)
+
+
 def _png(seed):
     image = Image.new("RGB", (60, 84))
     image.putdata([
@@ -625,6 +653,46 @@ class FingerprintBackfillTests(unittest.TestCase):
         self.assertIsNone(result["stopped_early"])
         self.assertEqual(result["stored"], total)
 
+    def test_the_breaker_boundary_is_exclusive_at_exactly_fifty_percent(self):
+        """A tie at exactly 50% failures must not trip the breaker.
+
+        `failed > attempted * BREAKER_FAILURE_RATE` and `failed >=
+        attempted * BREAKER_FAILURE_RATE` only disagree at this exact tie,
+        and an independent mutation run showed `>` -> `>=` surviving the
+        whole suite otherwise. BREAKER_MIN_ATTEMPTS/BREAKER_FAILURE_RATE are
+        pinned as literals elsewhere; this pins the direction of the tie
+        itself with a run engineered to land on the line exactly.
+        """
+        self.assertEqual(fingerprint_backfill.BREAKER_MIN_ATTEMPTS, 50)
+        self.assertEqual(fingerprint_backfill.BREAKER_FAILURE_RATE, 0.5)
+
+        total = 52
+        for i in range(total):
+            self._add(f"brk-{i:03d}_en")
+
+        # Cards 0-24 fail, 25-49 succeed: exactly 25/50 = 50% once the 50th
+        # card is attempted. That card must still be let through -- a tie is
+        # not "above" the rate -- and it fails too, crossing to 26/51
+        # (genuinely over 50%), which must abort card 51 before it is ever
+        # attempted.
+        def download(client, url, pacer, attempts=4):
+            index = int(url.rsplit("brk-", 1)[1].split("_")[0])
+            if index < 25 or index == 50:
+                return fingerprint_backfill.Download(None)
+            return fingerprint_backfill.Download(_png(index))
+
+        with patch.object(fingerprint_backfill, "download_image", download):
+            result = fingerprint_backfill.run_backfill(
+                self.db, rps=1000, workers=1, shuffle=False,
+            )
+
+        self.assertEqual(
+            result["attempted"], 51,
+            "the 50% tie must not abort card 50 before it is attempted",
+        )
+        self.assertTrue(result["stopped_early"])
+        self.assertIn("failure rate", result["stopped_early"])
+
     def test_the_read_transaction_is_closed_before_the_downloads_start(self):
         """The SELECT used to stay open for the whole run.
 
@@ -686,6 +754,88 @@ class FingerprintBackfillTests(unittest.TestCase):
             "everything was held back to a single commit at the end",
         )
         self.assertLess(batches[0], 6, "the first commit covered the whole run")
+
+    def test_the_flush_interval_boundary_is_exactly_sixty_seconds(self):
+        """MAX_FLUSH_SECONDS is pinned as a literal, not read back off itself.
+
+        The test above derives its sleep from `MAX_FLUSH_SECONDS / 2 + 1`, so
+        it stays green for any value the constant is changed to -- an
+        independent mutation run showed exactly that surviving the whole
+        suite. This test uses literal sleep durations instead, so a threshold
+        that moved away from 60 changes which cards land in which commit and
+        fails here.
+        """
+        self.assertEqual(fingerprint_backfill.MAX_FLUSH_SECONDS, 60.0)
+
+        clock = _VirtualTime()
+        for i in range(3):
+            self._add(f"flush-{i:03d}_en")
+
+        # Elapsed since the run's one `last_flush` mark: 59s after the first
+        # card (no flush yet), exactly 60s after the second (flush, boundary
+        # inclusive -- resets the mark), then 1s into the next window for the
+        # third (no flush until the trailing catch-all).
+        sleeps = [59.0, 1.0, 1.0]
+        calls = []
+
+        def slow_download(client, url, pacer, attempts=4):
+            clock.sleep(sleeps[len(calls)])
+            calls.append(url)
+            return fingerprint_backfill.Download(_png(len(calls)))
+
+        batches = []
+        real_store = fingerprint_backfill._store
+
+        def counting_store(db, updates):
+            batches.append(len(updates))
+            return real_store(db, updates)
+
+        with patch.object(fingerprint_backfill, "download_image", slow_download), \
+                patch.object(fingerprint_backfill, "_store", counting_store), \
+                patch.object(fingerprint_backfill, "time", clock), \
+                patch.object(fingerprint_backfill, "ThreadPoolExecutor", _SyncPool):
+            result = fingerprint_backfill.run_backfill(
+                self.db, rps=1000, workers=1, shuffle=False,
+                time_budget=float("inf"),
+            )
+
+        self.assertEqual(result["stored"], 3)
+        self.assertEqual(
+            batches, [2, 1],
+            "the first two cards must commit together right at the 60s "
+            "mark, and the third only at the trailing flush",
+        )
+
+    def test_store_commits_the_batch_not_just_flushes_it(self):
+        """_store must COMMIT, not merely flush.
+
+        A flush leaves the transaction open. The batch used to flush only on
+        COMMIT_BATCH *pending* rows, and rows that failed never became
+        pending, so a mostly-failing run held its transaction open --
+        idle-in-transaction -- for hours, pinning Postgres's xmin horizon and
+        blocking autovacuum on `cards`. `flush()` alone would reproduce that
+        exact bug even with MAX_FLUSH_SECONDS enforcing regular batches,
+        since a flush does not end the transaction. Nothing else in the
+        suite asserts a COMMIT actually happens -- an independent mutation
+        run showed `db.commit()` -> `db.flush()` inside `_store` surviving
+        the whole suite.
+        """
+        self._add("commit_en")
+        real_commit = self.db.commit
+        commits = []
+
+        def spy_commit():
+            commits.append(True)
+            return real_commit()
+
+        with patch.object(self.db, "commit", spy_commit):
+            fingerprint_backfill._store(
+                self.db,
+                [("commit_en", {"image_phash_source": self._url("commit_en")})],
+            )
+
+        self.assertEqual(len(commits), 1, "_store must call db.commit()")
+        self.assertFalse(self.db.in_transaction())
 
     def test_a_batch_is_stored_in_a_handful_of_statements_not_one_per_card(self):
         """2,000 round trips per scheduled run was the old cost."""
@@ -816,6 +966,71 @@ class FingerprintBackfillTests(unittest.TestCase):
         self.assertEqual(result.content, b"imagebytes")
         self.assertFalse(result.absent)
         self.assertEqual(len(calls), 1)
+
+    def test_the_run_s_http_client_follows_redirects(self):
+        """A 3xx is neither 200 nor ABSENT_STATUSES, so without this a moved
+        CDN host would burn the whole retry budget on every single card,
+        forever, and the circuit breaker would trip on every run.
+
+        Spies on the real httpx.Client constructor that `fingerprint_cards`
+        calls, so this fails if the redirect-following kwargs are ever
+        dropped from that call site, not just from some hand-built stand-in.
+        """
+        captured = {}
+        real_init = httpx.Client.__init__
+
+        def spying_init(self, *args, **kwargs):
+            captured.update(kwargs)
+            real_init(self, *args, **kwargs)
+
+        self._add("redir_en")
+        with patch.object(httpx.Client, "__init__", spying_init), \
+                patch.object(
+                    fingerprint_backfill, "download_image",
+                    lambda client, url, pacer, attempts=4:
+                        fingerprint_backfill.Download(_png(1)),
+                ):
+            fingerprint_backfill.run_backfill(
+                self.db, rps=1000, workers=1, shuffle=False
+            )
+
+        self.assertIs(captured.get("follow_redirects"), True)
+        self.assertEqual(captured.get("max_redirects"), fingerprint_backfill.MAX_REDIRECTS)
+        self.assertEqual(fingerprint_backfill.MAX_REDIRECTS, 5)
+
+    def test_a_redirect_resolves_as_success_not_a_retried_failure(self):
+        """End to end through the client construction `fingerprint_cards` uses.
+
+        Without follow_redirects, this 302 would be neither 200 nor an
+        ABSENT_STATUSES member, so `download_image` would retry it 4 times
+        (~127s) and finally report it as an unreachable/transient failure.
+        """
+        calls = []
+
+        def handler(request):
+            calls.append(request.url.path)
+            if request.url.path == "/old.png":
+                return httpx.Response(
+                    302, headers={"Location": "https://example.invalid/new.png"}
+                )
+            return httpx.Response(200, content=_png(1))
+
+        with httpx.Client(
+            transport=httpx.MockTransport(handler),
+            follow_redirects=True,
+            max_redirects=fingerprint_backfill.MAX_REDIRECTS,
+        ) as client:
+            result = fingerprint_backfill.download_image(
+                client, "https://example.invalid/old.png",
+                fingerprint_backfill.Pacer(rps=1000),
+            )
+
+        self.assertEqual(
+            calls, ["/old.png", "/new.png"],
+            "the redirect must be resolved within one attempt, not retried",
+        )
+        self.assertIsNotNone(result.content)
+        self.assertFalse(result.absent)
 
 
 @unittest.skipUnless(DEPS_AVAILABLE, "Backfill dependencies are not installed")

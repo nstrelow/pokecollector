@@ -102,6 +102,15 @@ BREAKER_FAILURE_RATE = 0.5
 # own; this is the ceiling for anything that does not.
 DEFAULT_TIME_BUDGET = 30 * 60.0
 
+# httpx.Client does not follow redirects by default. A 3xx response is neither
+# 200 nor in ABSENT_STATUSES, so without this, if TCGdex ever moved its asset
+# host behind a redirect, download_image would burn its whole ~127s retry
+# budget classifying every single card as a transient failure -- coverage
+# would never advance and the circuit breaker would trip on every run, with
+# only a warning to show for it. Capped rather than unbounded, so a redirect
+# loop still fails fast instead of trading the retry budget for a chase.
+MAX_REDIRECTS = 5
+
 
 class Pacer:
     """Global request pacing shared across worker threads."""
@@ -371,6 +380,8 @@ def fingerprint_cards(
     with httpx.Client(
         headers={"User-Agent": "pokecollector/backfill-fingerprints"},
         limits=httpx.Limits(max_connections=max(1, workers)),
+        follow_redirects=True,
+        max_redirects=MAX_REDIRECTS,
     ) as client:
 
         def work(row):
