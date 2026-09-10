@@ -2,7 +2,7 @@ import { useEffect, useState, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { Camera, Upload, ImagePlus, Trash2, X, Check, Loader2, RefreshCw, Plus } from 'lucide-react'
-import { recognizeCard, addToCollection, enqueueScanJob, getScannerConfiguration, uploadCollectionItemPhoto } from '../api/client'
+import { recognizeCard, recognizeCardLocally, addToCollection, enqueueScanJob, getScannerConfiguration, uploadCollectionItemPhoto } from '../api/client'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSettings } from '../contexts/SettingsContext'
 import { useConfirmDialog } from '../contexts/ConfirmDialogContext'
@@ -13,6 +13,7 @@ import { invalidateCardState, invalidateTcgdexFilterLanguages } from '../utils/q
 import MoneyInput from './MoneyInput'
 import { parseMoneyInputValue } from '../utils/moneyInput'
 import { CardDisplay } from './card-system'
+import { CandidateConfidence } from './ScanReview'
 import { tcgdexLanguageLabel } from '../utils/tcgdexLanguages'
 import { isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
 import { hasCatalogueImage } from '../utils/imageUrl'
@@ -225,13 +226,18 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
   const scanPreviewRef = useRef(null)
   const scannedFileRef = useRef(null)
   const stagedFilesRef = useRef([])
-  const { t } = useSettings()
+  const { t, settings } = useSettings()
   const confirmDialog = useConfirmDialog()
   const navigate = useNavigate()
+  // "Scanner v2 (Beta)": match against the local fingerprint index instead of
+  // calling a vision provider. Both endpoints answer in the same shape.
+  const localScanner = settings?.local_scanner_enabled === 'true'
+  // Only the provider path has a request timeout to configure, so don't fetch
+  // the provider configuration for a scan that will never reach a provider.
   const { data: scannerConfiguration } = useQuery({
     queryKey: ['scanner-configuration'],
     queryFn: getScannerConfiguration,
-    enabled: isOpen,
+    enabled: isOpen && !localScanner,
   })
 
   useEffect(() => {
@@ -256,10 +262,9 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
     scannedFileRef.current = file
     setPhase('loading')
     try {
-      const data = await recognizeCard(
-        file,
-        scannerConfiguration?.request_timeout_seconds,
-      )
+      const data = localScanner
+        ? await recognizeCardLocally(file)
+        : await recognizeCard(file, scannerConfiguration?.request_timeout_seconds)
       setResults(data)
       setSelectedMatch(data.matches?.[0] || null)
       setPhase('results')
@@ -408,7 +413,7 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
             </button>
 
             <p className="text-[11px] text-text-muted text-center max-w-xs">
-              {t('scanner.aiHint')}
+              {localScanner ? t('scanner.localHint') : t('scanner.aiHint')}
             </p>
           </div>
         )}
@@ -540,16 +545,18 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
                         const selected = selectedMatch?.id === match.id
                           && (selectedMatch?.lang || selectedMatch?._lang || 'en') === matchLang
                         return (
-                          <CardDisplay
-                            key={`${match.id}-${matchLang}`}
-                            variant="selectable"
-                            card={match}
-                            image={match.image}
-                            languageLabel={tcgdexLanguageLabel(matchLang)}
-                            selected={selected}
-                            onClick={() => setSelectedMatch(match)}
-                            onSelect={() => setSelectedMatch(match)}
-                          />
+                          <div key={`${match.id}-${matchLang}`}>
+                            <CardDisplay
+                              variant="selectable"
+                              card={match}
+                              image={match.image}
+                              languageLabel={tcgdexLanguageLabel(matchLang)}
+                              selected={selected}
+                              onClick={() => setSelectedMatch(match)}
+                              onSelect={() => setSelectedMatch(match)}
+                            />
+                            <CandidateConfidence level={match._confidence} t={t} />
+                          </div>
                         )
                       })}
                     </div>

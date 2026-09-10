@@ -611,6 +611,38 @@ export function usePrefetchMatchImages(matches) {
 }
 
 // ─── The candidate grid — the "which of these DB candidates is it" picker ──
+// Offline recognition ranks by artwork distance and says how far ahead the
+// leader is. Without this the shortlist looks like twelve equal guesses, when
+// in practice the top one is usually the card and the tail rarely is.
+// Written out per level rather than built from a key so every string stays
+// visible to the translation-key check.
+export function CandidateConfidence({ level, t }) {
+  if (level === 'high') {
+    return (
+      <p className="mt-1 text-center text-[10px] font-bold uppercase tracking-wider text-green">
+        {t('scanner.confidenceHigh')}
+      </p>
+    )
+  }
+  if (level === 'medium') {
+    return (
+      <p className="mt-1 text-center text-[10px] font-bold uppercase tracking-wider text-brand-yellow">
+        {t('scanner.confidenceMedium')}
+      </p>
+    )
+  }
+  if (level === 'low') {
+    return (
+      <p className="mt-1 text-center text-[10px] font-bold uppercase tracking-wider text-text-muted">
+        {t('scanner.confidenceLow')}
+      </p>
+    )
+  }
+  // The provider scanner returns no _confidence at all, and must look exactly
+  // as it does today.
+  return null
+}
+
 function CandidateGrid({ jobId, itemId, matches, onSelect, onZoom, t }) {
   usePrefetchMatchImages(matches)
 
@@ -689,6 +721,7 @@ function CandidateGrid({ jobId, itemId, matches, onSelect, onZoom, t }) {
                 </button>
               )}
             </div>
+            <CandidateConfidence level={match._confidence} t={t} />
           </div>
         )
       })}

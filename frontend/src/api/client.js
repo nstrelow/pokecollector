@@ -123,6 +123,22 @@ export const recognizeCard = (imageFile, requestTimeoutSeconds) => {
   }).then(r => r.data)
 }
 
+// Offline card recognition ("Scanner v2"): matches the photo against locally
+// stored artwork fingerprints. No provider, no API key, no internet. Same
+// response shape as /cards/recognize, plus _distance and _confidence per match.
+export const recognizeCardLocally = (imageFile) => {
+  const formData = new FormData()
+  formData.append('file', imageFile)
+  return api.post('/cards/recognize/local', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then(r => r.data)
+}
+
+// Whether offline recognition can answer yet, and how much of the catalogue
+// has been fingerprinted so far.
+export const getLocalScannerStatus = () =>
+  api.get('/cards/recognize/local/status').then(r => r.data)
+
 // Persistent background card-scan queue.
 export const enqueueScanJob = (files = [], individualPositions = []) => {
   const formData = new FormData()
