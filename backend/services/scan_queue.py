@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from models import ScanJob, ScanJobItem, ScanQueueUserState, User
 from services.gemini_rate_limit import gemini_priority_scope
+from services.local_scanner import local_scanner_enabled
 from services.scan_storage import (
     ScanUploadError,
     delete_job_directory,
@@ -61,6 +62,12 @@ class _ProcessWideAsyncSemaphore:
 _scan_processing_semaphore = _ProcessWideAsyncSemaphore(
     MAX_CONCURRENT_SCAN_PROCESSING
 )
+
+# How an offline scan is labelled in diagnostics. No provider is contacted and
+# no model runs; naming the mechanism that did the work keeps a local scan from
+# reading as a Gemini or OpenAI one in a stored trace.
+LOCAL_SCANNER_PROVIDER = "local"
+LOCAL_SCANNER_MODEL = "artwork-fingerprint"
 
 
 @dataclass(frozen=True)
@@ -467,6 +474,45 @@ def _clear_recognition_cache(claim: ClaimedScanItem) -> None:
     finally:
         cache_db.close()
 
+async def _local_scan(
+    db: Session,
+    user_id: int,
+    image_bytes: bytes,
+    *,
+    job_id: int | None = None,
+    item_id: int | None = None,
+) -> dict:
+    """Recognize one already-sanitized photo offline, with no provider involved.
+
+    Always traced as a single scan: offline matching has no composite mode, so
+    even a photo staged as part of a group is recognized on its own.
+    """
+    from api.recognize_local import recognize_sanitized_card_locally
+    from services.scan_trace import create_scan_trace
+
+    trace = create_scan_trace(
+        db,
+        user_id,
+        mode="single",
+        job_id=job_id,
+        item_id=item_id,
+        filename="sanitized-scan.jpg",
+        provider=LOCAL_SCANNER_PROVIDER,
+        model=LOCAL_SCANNER_MODEL,
+    )
+    trace.set_image(image_bytes)
+    try:
+        result = await recognize_sanitized_card_locally(db, image_bytes)
+    except Exception as exc:
+        trace.record_error(str(getattr(exc, "detail", exc)))
+        raise
+    else:
+        trace.record_candidates(result.get("matches") or [])
+        trace.record_decision(result.get("_identity_decision") or "local_shortlist")
+        return result
+    finally:
+        trace.save()
+
 
 async def default_scan_processor(
     db: Session,
@@ -487,6 +533,10 @@ async def default_scan_processor(
     user = db.get(User, user_id)
     if user is None or not user.is_active:
         raise PermanentScanError("The scan owner is no longer an active user.")
+    if local_scanner_enabled(db, user_id):
+        return await _local_scan(
+            db, user_id, image_bytes, job_id=job_id, item_id=item_id
+        )
     provider = get_provider(db, user_id)
     require_scanner_capability_mode(db, user_id, provider.name, provider.model())
     api_key = provider.credential(db, user_id)
@@ -548,6 +598,44 @@ async def default_scan_processor(
         trace.save()
 
 
+async def _local_composite_scan(
+    db: Session,
+    user_id: int,
+    images: list[bytes],
+    *,
+    job_id: int | None = None,
+    item_ids: list[int] | tuple[int, ...] | None = None,
+) -> list[dict | None]:
+    """Recognize a staged group offline, one photo at a time.
+
+    Compositing several cards into one frame exists to spend a single provider
+    call on four photos. Offline matching has no such cost, and a frame holding
+    more than one card is precisely the case its card detection cannot box --
+    so each photo is matched separately and every position comes back with its
+    own shortlist. A photo the fingerprinter cannot read is returned as None so
+    only that position falls back to an individual scan, rather than failing its
+    three companions with it.
+    """
+    trace_item_ids = list(item_ids or [])
+    results: list[dict | None] = []
+    for position, image in enumerate(images):
+        try:
+            results.append(await _local_scan(
+                db,
+                user_id,
+                image,
+                job_id=job_id,
+                item_id=(
+                    trace_item_ids[position] if position < len(trace_item_ids) else None
+                ),
+            ))
+        except HTTPException as exc:
+            if exc.status_code != 400:
+                raise
+            results.append(None)
+    return results
+
+
 async def default_composite_processor(
     db: Session,
     user_id: int,
@@ -577,6 +665,10 @@ async def default_composite_processor(
     user = db.get(User, user_id)
     if user is None or not user.is_active:
         raise PermanentScanError("The scan owner is no longer an active user.")
+    if local_scanner_enabled(db, user_id):
+        return await _local_composite_scan(
+            db, user_id, images, job_id=job_id, item_ids=item_ids
+        )
     provider = get_provider(db, user_id)
     request_timeout_seconds = resolve_scanner_request_timeout(
         db, user_id, provider.name
