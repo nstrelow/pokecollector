@@ -2,15 +2,12 @@ import base64
 import asyncio
 import datetime
 import httpx
-import io
 import math
 import os
 import json
 import re
-import warnings
 from collections.abc import Callable
 from email.utils import parsedate_to_datetime
-from functools import lru_cache
 from urllib.parse import urlparse
 from services.tcgdex_languages import is_supported_tcgdex_language, normalize_tcgdex_language
 from services.gemini_rate_limit import (
@@ -719,50 +716,30 @@ async def _download_candidate_images(
     return downloaded
 
 
-@lru_cache(maxsize=1)
-def _phash_dct_matrix():
-    """Build the unnormalised DCT-II matrix used by imagehash.phash."""
-    import numpy as np
-
-    size = 32
-    positions = np.arange(size)
-    frequencies = np.arange(size)[:, None]
-    return 2 * np.cos(
-        np.pi * frequencies * (2 * positions + 1) / (2 * size)
-    )
-
-
 def _perceptual_hash(image_bytes: bytes | None) -> tuple[bool, ...] | None:
-    """Return the same 64-bit pHash as imagehash without its SciPy dependency."""
-    if not image_bytes:
-        return None
-    try:
-        import numpy as np
-        from PIL import Image
+    """Return the same 64-bit pHash as imagehash without its SciPy dependency.
 
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(io.BytesIO(image_bytes)) as image:
-                width, height = image.size
-                if (
-                    width <= 0
-                    or height <= 0
-                    or width * height > MAX_REFERENCE_IMAGE_PIXELS
-                ):
-                    return None
-                pixels = np.asarray(
-                    image.convert("L").resize(
-                        (32, 32),
-                        Image.Resampling.LANCZOS,
-                    ),
-                    dtype=float,
-                )
-        transform = _phash_dct_matrix()
-        low_frequencies = (transform @ pixels @ transform.T)[:8, :8]
-        median = np.median(low_frequencies)
-        return tuple(bool(value) for value in (low_frequencies > median).flat)
-    except Exception:
+    The bit-level definition lives in services/card_fingerprint, which also
+    backs the persisted `cards.image_phash` column. Keeping one copy is the
+    point: two implementations of the same hash that drift apart would make
+    stored fingerprints silently incomparable with freshly computed ones.
+
+    Passes `mode="L"` because this hash is never persisted -- it only ever
+    scores a photo against up to `PHASH_CANDIDATE_LIMIT` reference images in
+    memory, one scan at a time. `card_fingerprint._open` normally materialises
+    RGB first because every *persisted* fingerprint must be computed that way;
+    here there is nothing to stay consistent with across restarts, so decoding
+    straight to L recovers the RGB copy's memory cost (measured there at
+    +415MB vs +277MB on one 48-megapixel input) without changing a single bit
+    of the result -- see `card_fingerprint._hash_bits` for the pixel-identity
+    argument this relies on.
+    """
+    from services.card_fingerprint import hash_bits
+
+    bits = hash_bits(image_bytes, max_pixels=MAX_REFERENCE_IMAGE_PIXELS, mode="L")
+    if bits is None:
         return None
+    return tuple(bool(value) for value in bits)
 
 
 def _phash_best_match(
