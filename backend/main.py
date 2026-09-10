@@ -151,6 +151,7 @@ async def debug_request_logging(request: Request, call_next):
 from api import auth, cards, collection, sets, wishlist, binders, dashboard, analytics, sync, products, trades, export, backup, settings, images, social, pokedex, public, profile, scan_jobs, community
 from api.github import router as github_router
 from api.recognize import router as recognize_router
+from api.recognize_local import router as recognize_local_router
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 
@@ -182,6 +183,7 @@ async def login_rate_limit(request: Request, call_next):
     return await call_next(request)
 app.include_router(cards.router, prefix="/api/cards", tags=["cards"])
 app.include_router(recognize_router, prefix="/api/cards", tags=["recognize"])
+app.include_router(recognize_local_router, prefix="/api/cards", tags=["recognize"])
 app.include_router(scan_jobs.router, prefix="/api/cards", tags=["scan-jobs"])
 app.include_router(collection.router, prefix="/api/collection", tags=["collection"])
 app.include_router(sets.router, prefix="/api/sets", tags=["sets"])
