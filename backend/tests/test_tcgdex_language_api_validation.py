@@ -114,8 +114,16 @@ class TcgdexLanguageApiValidationTests(unittest.TestCase):
             def refresh(self, item):
                 pass
 
+        def add_without_events(db, card):
+            # The real helper registers SQLAlchemy Session events to invalidate
+            # the fingerprint index, which a hand-rolled fake session cannot
+            # host. That behaviour is pinned in test_fingerprint_index.py.
+            db.add(card)
+            return card
+
         fake_db = FakeDb()
-        with patch("api.collection.pokemon_api.get_card", return_value={"id": "sv1-1", "name": "Test", "_lang": "zh-tw"}) as get_card:
+        with patch("api.collection.pokemon_api.get_card", return_value={"id": "sv1-1", "name": "Test", "_lang": "zh-tw"}) as get_card, \
+             patch("api.collection.add_catalogue_card", add_without_events):
             card = ensure_card_exists(fake_db, "sv1-1_zh-tw")
 
         self.assertGreaterEqual(get_card.call_count, 1)

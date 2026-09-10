@@ -166,6 +166,49 @@ def visible_any_card_filter(db: Session, user_id: int, requested_lang: str | Non
     )
 
 
+def indexable_card_filter(db: Session):
+    """Predicate for catalogue cards eligible for the app-wide fingerprint index.
+
+    The offline recognition index is one process-wide structure shared by every
+    request, so it cannot use a per-user predicate. It therefore uses the
+    catalogue rule with app-wide pins -- the same shape as `visible_card_filter`
+    but with `get_pinned_set_language_pairs(user_id=None)`, exactly like
+    `sync_set_filter` does for sets.
+
+    Custom cards are excluded outright. They are per-user data (private cards,
+    other people's shared templates), and a shared index has no way to tell one
+    viewer from another, so they are never fingerprinted or indexed at all.
+
+    Accepted consequence in multi-user installs: app-wide pins are app-wide. If
+    user A collects a Japanese card while "ja" is not in the global catalogue
+    languages, that set becomes indexable for everybody, so user B's shortlist
+    can contain a Japanese printing they never asked to see. This is judged
+    acceptable because what leaks is TCGdex catalogue data -- a public card
+    name, number and artwork URL, the same rows any user can already reach by
+    enabling the language in settings -- and never anything about A's
+    collection. The alternative, a per-user index, means one full snapshot per
+    user at ~40MB of row metadata each (see the module docstring in
+    services/fingerprint_index.py), which is not worth paying to hide a public
+    card list.
+    """
+    active_languages = set(get_configured_sync_languages(db))
+    pinned_pairs = get_pinned_set_language_pairs(db, user_id=None)
+    # is_custom/is_digital are nullable columns (see migrate_card_ids(), which
+    # treats a NULL is_custom the same as FALSE). An equality comparison drops
+    # NULL rows from the index silently instead of erroring, so treat NULL as
+    # FALSE here too.
+    digital_clause = (
+        True
+        if digital_sets_enabled(db)
+        else or_(Card.is_digital.is_(None), Card.is_digital == False)
+    )
+    return and_(
+        or_(Card.is_custom.is_(None), Card.is_custom == False),
+        or_(Card.lang.in_(active_languages), card_pair_filter(pinned_pairs)),
+        digital_clause,
+    )
+
+
 def sync_set_filter(db: Session):
     """Predicate for localized sets that full sync should maintain app-wide."""
     active_languages = set(get_configured_sync_languages(db))

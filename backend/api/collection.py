@@ -9,6 +9,7 @@ from schemas import CollectionItemCreate, CollectionItemUpdate, CollectionItemRe
 from services import pokemon_api
 from services.card_fallbacks import apply_cross_language_fallbacks, build_missing_language_card
 from services.card_numbers import card_number_matches
+from services.card_upsert import add_catalogue_card, apply_catalogue_fields
 from services.collection_photos import MAX_UPLOAD_BYTES, InvalidPhoto, normalize_photo
 from services.card_visibility import visible_any_card_filter, visible_card_filter
 from services.binder_allocations import collection_item_allocated_quantity
@@ -244,8 +245,7 @@ def ensure_card_exists(
                 parsed["is_digital"] = True
         if parsed.get("is_digital") and not digital_sets_enabled(db):
             raise HTTPException(status_code=404, detail=f"Card {card_id} is not available.")
-        card = Card(**parsed)
-        db.add(card)
+        card = add_catalogue_card(db, Card(**parsed))
         try:
             db.commit()
             db.refresh(card)
@@ -416,11 +416,11 @@ def _find_card_by_code(db: Session, set_code: str, card_number: str, lang: str) 
                 parsed = apply_cross_language_fallbacks(db, parsed)
                 existing = db.query(Card).filter(Card.id == parsed["id"]).first()
                 if existing:
-                    for key, value in parsed.items():
-                        if key != "id":
-                            setattr(existing, key, value)
+                    # Shared helper: this loop rewrites images_small, and doing
+                    # it by hand left a fingerprint of the old artwork behind.
+                    apply_catalogue_fields(db, existing, parsed)
                 else:
-                    db.add(Card(**parsed))
+                    add_catalogue_card(db, Card(**parsed))
             db.commit()
         except Exception:
             logger.exception("Failed to cache cards for CSV import set_id=%s lang=%s", tcg_set_id, lang)

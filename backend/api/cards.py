@@ -20,7 +20,7 @@ from services.card_metadata import (
     card_needs_metadata_enrichment,
     enrich_card_metadata_ids_in_background,
 )
-from services.card_upsert import upsert_card
+from services.card_upsert import add_catalogue_card, apply_catalogue_fields, upsert_card
 from services.card_visibility import (
     get_configured_sync_languages,
     visible_any_card_filter,
@@ -807,13 +807,13 @@ def migrate_custom_card(
         # Upsert API card using composite ID
         existing_api_card = db.query(Card).filter(Card.id == composite_api_card_id).first()
         if existing_api_card:
-            for k, v in parsed.items():
-                if k != "id":
-                    setattr(existing_api_card, k, v)
+            # Goes through the shared helper so a rotated images_small cannot
+            # leave a fingerprint of the previous artwork behind.
+            apply_catalogue_fields(db, existing_api_card, parsed)
             existing_api_card.is_custom = False
         else:
             parsed["is_custom"] = False
-            db.add(Card(**parsed))
+            add_catalogue_card(db, Card(**parsed))
 
         db.flush()
     except HTTPException:
