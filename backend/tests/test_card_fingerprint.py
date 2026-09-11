@@ -851,13 +851,27 @@ class MatchProbabilityTests(unittest.TestCase):
         P must satisfy k * P <= 100. The old table gave every tied row the
         rank-1 curve and broke this on 78.7% of real shortlists.
         """
-        for k in range(1, 9):
+        # Up to 24, not up to 8. A shortlist holds twelve tiles and all twelve
+        # can tie; stopping at 8 passed while a twelve-way tie summed to 148%,
+        # because the widest measured row is an aggregate over ties averaging
+        # about eight and handing it to twelve tiles overstates every one.
+        for k in range(1, 25):
             for distance in range(0, 26, 2):
                 with self.subTest(k=k, distance=distance):
                     total = k * card_fingerprint.match_probability(
                         distance, leaders=k
                     )
                     self.assertLessEqual(total, 100)
+
+    def test_a_tie_too_wide_to_have_been_measured_divides_the_band(self):
+        widest = card_fingerprint.match_probability(
+            0, leaders=card_fingerprint.MAX_TIE_BAND
+        )
+        doubled = card_fingerprint.match_probability(
+            0, leaders=card_fingerprint.MAX_TIE_BAND * 2
+        )
+        self.assertLess(doubled, widest)
+        self.assertGreaterEqual(doubled, 1, "a shown tile is never impossible")
 
     def test_it_falls_as_distance_grows(self):
         for leaders in (0, 1, 2, 3, 5, 9):
@@ -889,11 +903,18 @@ class MatchProbabilityTests(unittest.TestCase):
                     self.assertLessEqual(value, 100)
 
     def test_a_tie_wider_than_the_measured_bands_is_not_an_error(self):
-        """Ties of 9 and more exist; they share the widest measured curve."""
+        """Ties of 9 and more exist, and get less than the widest measured row.
+
+        They cannot simply share it: that row is an aggregate over ties around
+        eight wide, so giving it to forty tiles would have forty of them each
+        claiming what eight of them earned.
+        """
         widest = card_fingerprint.match_probability(
             4, leaders=card_fingerprint.MAX_TIE_BAND
         )
-        self.assertEqual(card_fingerprint.match_probability(4, leaders=40), widest)
+        wider = card_fingerprint.match_probability(4, leaders=40)
+        self.assertLess(wider, widest)
+        self.assertIsInstance(wider, int)
 
     def test_a_distance_a_band_never_saw_defers_to_a_wider_tie(self):
         """A unique leader at distance 16 was observed twice, both times wrong.

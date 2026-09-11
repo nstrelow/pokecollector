@@ -229,7 +229,15 @@ def match_probability(distance: int, *, leaders: int) -> int:
         if band < MAX_TIE_BAND:
             return match_probability(distance, leaders=band + 1)
         return _interpolate(_TRAILING_TILE_PROBABILITY, distance)
-    return _interpolate(table, distance)
+    value = _interpolate(table, distance)
+    if leaders > MAX_TIE_BAND:
+        # The widest row is "5 or more", measured across ties whose mean width
+        # is about eight. Handing a twelve-way tie that aggregate would let
+        # twelve tiles claim 12% each -- 148% between them, which is the same
+        # defect this table replaced, just smaller. Divide the band's measured
+        # mass across the tiles actually sharing it instead.
+        value = round(value * MAX_TIE_BAND / leaders)
+    return max(1, value)
 
 
 def _interpolate(table: dict[int, float], distance: int) -> int:
