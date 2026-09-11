@@ -1229,6 +1229,7 @@ const en = {
     submittingBatch: 'Uploading photos…',
     discardStagedConfirm: 'Discard all staged photos and close the scanner?',
     batchSubmitFailed: 'The scan batch could not be submitted.',
+    batchUploadTimeout: 'Upload timed out before the photos finished sending. Try again on a stronger connection, or in smaller batches.',
     batchLimitReached: 'A batch can contain at most 50 photos.',
     unsupportedImage: 'This image format is not supported.',
     aiHint: 'AI recognition - automatically detects supported TCGdex languages',

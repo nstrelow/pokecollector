@@ -6,6 +6,7 @@ import toast from 'react-hot-toast'
 
 import { enqueueScanJob, getScannerConfiguration } from '../api/client'
 import { useSettings } from '../contexts/SettingsContext'
+import { isUploadTimeout } from '../utils/scannerTimeout'
 import { isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
 import ConfirmDialog from './ui/ConfirmDialog'
 import Modal from './ui/Modal'
@@ -163,7 +164,11 @@ export default function UnifiedCardScanner({ isOpen, onClose }) {
       onClose?.()
       navigate(`/scans/${job.id}`)
     } catch (error) {
-      toast.error(error?.response?.data?.detail || t('scanner.batchSubmitFailed'))
+      toast.error(
+        isUploadTimeout(error)
+          ? t('scanner.batchUploadTimeout')
+          : error?.response?.data?.detail || t('scanner.batchSubmitFailed'),
+      )
     } finally {
       setSubmitting(false)
     }

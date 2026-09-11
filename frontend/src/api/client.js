@@ -3,6 +3,7 @@ import { isPublicSharePath } from '../utils/publicRoutes'
 import {
   scannerRecognitionRequestTimeoutMs,
   scannerTestRequestTimeoutMs,
+  scanUploadTimeoutMs,
 } from '../utils/scannerTimeout'
 
 const api = axios.create({
@@ -146,6 +147,7 @@ export const enqueueScanJob = (files = [], individualPositions = []) => {
   formData.append('individual_positions', JSON.stringify(individualPositions))
   return api.post('/cards/recognize/jobs', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: scanUploadTimeoutMs(files.length),
   }).then(r => r.data)
 }
 export const getScanJobs = () => api.get('/cards/recognize/jobs').then(r => r.data)

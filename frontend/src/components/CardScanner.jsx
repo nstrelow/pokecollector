@@ -5,6 +5,7 @@ import { Camera, Upload, ImagePlus, Trash2, X, Check, Loader2, RefreshCw, Plus }
 import { recognizeCard, recognizeCardLocally, addToCollection, enqueueScanJob, getScannerConfiguration, uploadCollectionItemPhoto } from '../api/client'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSettings } from '../contexts/SettingsContext'
+import { isUploadTimeout } from '../utils/scannerTimeout'
 import { useConfirmDialog } from '../contexts/ConfirmDialogContext'
 import toast from 'react-hot-toast'
 import { CARD_VARIANTS, getDefaultVariant } from '../utils/cardVariants'
@@ -13,7 +14,6 @@ import { invalidateCardState, invalidateTcgdexFilterLanguages } from '../utils/q
 import MoneyInput from './MoneyInput'
 import { parseMoneyInputValue } from '../utils/moneyInput'
 import { CardDisplay } from './card-system'
-import { CandidateConfidence } from './ScanReview'
 import { tcgdexLanguageLabel } from '../utils/tcgdexLanguages'
 import { isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
 import { hasCatalogueImage } from '../utils/imageUrl'
@@ -349,7 +349,11 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
       onClose?.()
       navigate(`/scans/${job.id}`)
     } catch (error) {
-      toast.error(error?.response?.data?.detail || t('scanner.batchSubmitFailed'))
+      toast.error(
+        isUploadTimeout(error)
+          ? t('scanner.batchUploadTimeout')
+          : error?.response?.data?.detail || t('scanner.batchSubmitFailed'),
+      )
     } finally {
       setSubmittingBatch(false)
     }
@@ -555,7 +559,6 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
                               onClick={() => setSelectedMatch(match)}
                               onSelect={() => setSelectedMatch(match)}
                             />
-                            <CandidateConfidence level={match._confidence} t={t} />
                           </div>
                         )
                       })}
