@@ -174,6 +174,15 @@ async def recognize_local_photo(
     confident = is_confident(ranked)
     rows = snapshot.rows
 
+    # "Leader" means strictly closest, not merely first in the list. Two rows at
+    # the same distance are two rows the hash cannot tell apart -- typically the
+    # German and English printings of one artwork -- and which of them lands at
+    # rank 1 is decided by row index, which carries no evidence at all. Scoring
+    # one as the leader and the other as a tail entry turned that coin flip into
+    # "43% versus 4%" on a real scan, which is not a small overstatement of a
+    # weak signal but an invented one.
+    best_distance = ranked[0][1] if ranked else None
+
     matches = []
     for row_index, distance in ranked:
         row = rows[row_index]
@@ -192,7 +201,9 @@ async def recognize_local_photo(
             "_confidence": _confidence(distance),
             # Measured, not derived from the distance arithmetically -- see
             # card_fingerprint.match_probability.
-            "_match_percent": match_probability(distance, leader=not matches),
+            "_match_percent": match_probability(
+                distance, leader=distance == best_distance
+            ),
         })
 
     return {

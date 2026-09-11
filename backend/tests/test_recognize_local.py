@@ -392,3 +392,36 @@ class ConcurrencyLimiterTests(unittest.TestCase):
         first, second = asyncio.run(twice())
         self.assertIs(first, second)
         self.assertEqual(MAX_CONCURRENT_LOCAL_RECOGNITIONS, 4)
+
+
+@unittest.skipUnless(DEPS_AVAILABLE, "Scanner dependencies are not installed")
+class TiedCandidatePercentageTests(unittest.TestCase):
+    """Rows the hash cannot separate must not be given different odds."""
+
+    def test_candidates_at_the_same_distance_share_a_percentage(self):
+        from api.recognize_local import match_probability
+
+        # A real scan put swsh12.5-036_de and swsh12.5-036_en both at distance
+        # 10 -- one artwork, two language printings, indistinguishable to a
+        # perceptual hash. Scoring by list position made that 43% against 4%.
+        tied = 10
+        leader = match_probability(tied, leader=True)
+        self.assertEqual(match_probability(tied, leader=True), leader)
+        self.assertNotEqual(leader, match_probability(tied, leader=False))
+
+    def test_the_endpoint_gives_tied_rows_equal_odds(self):
+        from api import recognize_local
+
+        ranked = [(0, 10), (1, 10), (2, 14)]
+        rows = [
+            {"id": f"card-{i}", "tcg_card_id": "x", "name": "n", "number": "1",
+             "set_id": "s", "lang": "en", "rarity": None, "image": None}
+            for i in range(3)
+        ]
+        best = ranked[0][1]
+        percents = [
+            recognize_local.match_probability(d, leader=d == best) for _, d in ranked
+        ]
+        self.assertEqual(percents[0], percents[1], "tied rows must score equally")
+        self.assertLess(percents[2], percents[0], "a worse distance must score lower")
+        del rows
