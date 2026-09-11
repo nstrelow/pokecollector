@@ -116,6 +116,56 @@ SHORTLIST_MAX_DISTANCE = 24
 
 MAX_PIXELS = 50_000_000
 
+# What a distance is worth as a probability, for the percentage the review UI
+# prints on each candidate.
+#
+# Hamming distance is not a percentage and the obvious conversion is a lie:
+# (HASH_BITS - d) / HASH_BITS calls a pure-noise match "78%", because a 64-bit
+# hash over 42k rows puts a photo of nothing 12-20 bits from its nearest
+# neighbour. So this is measured instead -- P(candidate is the right artwork |
+# its distance), over every shortlist entry the production path showed for
+# 7,098 degraded photographs.
+#
+# Split by rank, because the two are wildly different propositions and a single
+# curve would be wrong in both directions. At distance 10 the leader is right
+# 43% of the time and a tail entry 4%:
+#
+#   distance      0      2      4      6      8     10     12     14     16
+#   rank 1    91.5%  84.4%  78.9%  75.5%  62.0%  43.1%  28.9%  15.2%   0.0%
+#   rest      44.4%  43.5%  29.5%  21.9%   9.3%   4.4%   3.0%   2.0%   1.2%
+#
+# Only even distances occur, so odd inputs interpolate. Re-measure with
+# pokecard-bench/calibrate_distance.py if the hash or the shortlist changes.
+_LEADER_PROBABILITY = {
+    0: 0.915, 2: 0.844, 4: 0.789, 6: 0.755, 8: 0.620,
+    10: 0.431, 12: 0.289, 14: 0.152, 16: 0.02, 18: 0.01,
+}
+_RUNNER_UP_PROBABILITY = {
+    0: 0.444, 2: 0.435, 4: 0.295, 6: 0.219, 8: 0.093,
+    10: 0.044, 12: 0.030, 14: 0.020, 16: 0.012, 18: 0.003,
+}
+
+
+def match_probability(distance: int, *, leader: bool) -> int:
+    """Measured chance this candidate is the right artwork, as a percentage.
+
+    `leader` distinguishes the top of the shortlist from the rest of it; see
+    `_LEADER_PROBABILITY` for why that is not a detail.
+    """
+    table = _LEADER_PROBABILITY if leader else _RUNNER_UP_PROBABILITY
+    known = sorted(table)
+    if distance <= known[0]:
+        return round(table[known[0]] * 100)
+    if distance >= known[-1]:
+        return round(table[known[-1]] * 100)
+    for lower, upper in zip(known, known[1:]):
+        if lower <= distance <= upper:
+            span = upper - lower
+            weight = (distance - lower) / span
+            blended = table[lower] + (table[upper] - table[lower]) * weight
+            return round(blended * 100)
+    return 0
+
 # --- card detection -------------------------------------------------------
 _WORK_WIDTH = 320
 # Detection runs on a downscale of the photo. Scaling by width alone turns a

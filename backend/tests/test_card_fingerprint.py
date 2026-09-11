@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from services import card_fingerprint  # noqa: E402
 from services.card_fingerprint import (  # noqa: E402
+    HASH_BITS,
     HASH_BYTES,
     MAX_DISTANCE,
     SHORTLIST_MAX_DISTANCE,
@@ -771,6 +772,60 @@ class PhotoVariantTests(unittest.TestCase):
         ):
             self.assertEqual(card_fingerprint.photo_hash_variants(photo), [])
             self.assertIsNone(fingerprint_photo(photo))
+
+
+class MatchProbabilityTests(unittest.TestCase):
+    """The percentage printed on a candidate is measured, not derived."""
+
+    def test_it_is_not_the_naive_distance_arithmetic(self):
+        """(HASH_BITS - d) / HASH_BITS would call a noise match 78%.
+
+        A 64-bit hash over a 42k catalogue puts a photo of nothing 12-20 bits
+        from its nearest row, so any linear reading of distance reports most of
+        the noise floor as a strong match. The whole point of the table is that
+        it collapses there instead.
+        """
+        naive = round((HASH_BITS - 14) / HASH_BITS * 100)
+        self.assertEqual(naive, 78)
+        self.assertLess(card_fingerprint.match_probability(14, leader=True), 40)
+        self.assertLess(card_fingerprint.match_probability(14, leader=False), 10)
+
+    def test_the_leader_and_the_tail_are_not_the_same_proposition(self):
+        for distance in (0, 4, 8, 10, 12):
+            with self.subTest(distance=distance):
+                self.assertGreater(
+                    card_fingerprint.match_probability(distance, leader=True),
+                    card_fingerprint.match_probability(distance, leader=False),
+                )
+
+    def test_it_falls_as_distance_grows(self):
+        for leader in (True, False):
+            values = [
+                card_fingerprint.match_probability(d, leader=leader)
+                for d in range(0, 20, 2)
+            ]
+            self.assertEqual(values, sorted(values, reverse=True))
+
+    def test_odd_distances_interpolate_between_the_measured_ones(self):
+        for leader in (True, False):
+            low = card_fingerprint.match_probability(10, leader=leader)
+            high = card_fingerprint.match_probability(8, leader=leader)
+            middle = card_fingerprint.match_probability(9, leader=leader)
+            self.assertLessEqual(low, middle)
+            self.assertLessEqual(middle, high)
+
+    def test_it_stays_a_percentage_at_and_beyond_both_ends(self):
+        for distance in (-5, 0, 1, 24, 64, 1000):
+            for leader in (True, False):
+                with self.subTest(distance=distance, leader=leader):
+                    value = card_fingerprint.match_probability(distance, leader=leader)
+                    self.assertIsInstance(value, int)
+                    self.assertGreaterEqual(value, 0)
+                    self.assertLessEqual(value, 100)
+
+    def test_a_perfect_hash_match_is_still_not_a_certainty(self):
+        """Distance 0 means identical artwork, which reprints genuinely share."""
+        self.assertLess(card_fingerprint.match_probability(0, leader=True), 100)
 
 
 class SearchVariantsTests(unittest.TestCase):

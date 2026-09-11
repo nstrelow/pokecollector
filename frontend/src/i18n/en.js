@@ -1235,6 +1235,7 @@ const en = {
     aiHint: 'AI recognition - automatically detects supported TCGdex languages',
     localHint: 'Offline recognition - matched against locally stored artwork, no internet needed',
     localModeNotice: 'Scanner v2 is on, so these photos are matched against locally stored artwork instead of being sent to a provider. Fill the frame with one card: the artwork is all it has to go on.',
+    matchConfidence: 'Chance this is the right card',
     confidenceHigh: 'Strong match',
     confidenceMedium: 'Possible match',
     confidenceLow: 'Weak match',

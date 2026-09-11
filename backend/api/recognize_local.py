@@ -36,6 +36,7 @@ from services.card_fingerprint import (
     MAX_DISTANCE,
     SHORTLIST_MAX_DISTANCE,
     is_confident,
+    match_probability,
     photo_hash_variants,
     search_variants,
 )
@@ -189,6 +190,9 @@ async def recognize_local_photo(
             # Extra, local-only fields. The review UI ignores what it does not know.
             "_distance": distance,
             "_confidence": _confidence(distance),
+            # Measured, not derived from the distance arithmetically -- see
+            # card_fingerprint.match_probability.
+            "_match_percent": match_probability(distance, leader=not matches),
         })
 
     return {

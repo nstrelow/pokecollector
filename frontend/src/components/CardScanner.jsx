@@ -14,6 +14,7 @@ import { invalidateCardState, invalidateTcgdexFilterLanguages } from '../utils/q
 import MoneyInput from './MoneyInput'
 import { parseMoneyInputValue } from '../utils/moneyInput'
 import { CardDisplay } from './card-system'
+import { CandidateConfidenceBadge } from './ScanReview'
 import { tcgdexLanguageLabel } from '../utils/tcgdexLanguages'
 import { isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
 import { hasCatalogueImage } from '../utils/imageUrl'
@@ -558,6 +559,13 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
                               selected={selected}
                               onClick={() => setSelectedMatch(match)}
                               onSelect={() => setSelectedMatch(match)}
+                              overlay={(
+                                <CandidateConfidenceBadge
+                                  level={match._confidence}
+                                  percent={match._match_percent}
+                                  t={t}
+                                />
+                              )}
                             />
                           </div>
                         )

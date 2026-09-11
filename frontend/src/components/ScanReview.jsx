@@ -611,36 +611,37 @@ export function usePrefetchMatchImages(matches) {
 }
 
 // ─── The candidate grid — the "which of these DB candidates is it" picker ──
-// Offline recognition ranks by artwork distance and says how far ahead the
-// leader is. Without this the shortlist looks like twelve equal guesses, when
-// in practice the top one is usually the card and the tail rarely is.
-// Written out per level rather than built from a key so every string stays
-// visible to the translation-key check.
-export function CandidateConfidence({ level, t }) {
-  if (level === 'high') {
-    return (
-      <p className="mt-1 text-center text-[10px] font-bold uppercase tracking-wider text-green">
-        {t('scanner.confidenceHigh')}
-      </p>
-    )
-  }
-  if (level === 'medium') {
-    return (
-      <p className="mt-1 text-center text-[10px] font-bold uppercase tracking-wider text-brand-yellow">
-        {t('scanner.confidenceMedium')}
-      </p>
-    )
-  }
-  if (level === 'low') {
-    return (
-      <p className="mt-1 text-center text-[10px] font-bold uppercase tracking-wider text-text-muted">
-        {t('scanner.confidenceLow')}
-      </p>
-    )
-  }
-  // The provider scanner returns no _confidence at all, and must look exactly
-  // as it does today.
-  return null
+const CONFIDENCE_TONE = {
+  high: 'border-green/40 bg-green/85 text-black',
+  medium: 'border-brand-yellow/40 bg-brand-yellow/85 text-black',
+  low: 'border-white/15 bg-black/75 text-text-muted',
+}
+
+// Offline recognition ranks by artwork distance, and the percentage is the
+// measured chance THIS candidate is the right artwork at that distance and
+// rank -- not distance arithmetic, which would call a noise match 78%. See
+// card_fingerprint.match_probability.
+//
+// A corner badge rather than a caption: the number belongs on the card it
+// describes, and the shortlist is a dense grid where a second line of text
+// under every tile costs more than it says. Colour still carries the coarse
+// tier, so the badge is readable at a glance and exact on inspection.
+//
+// Top right, because upstream's printed-total warning already owns top left.
+//
+// The provider scanner sends neither field, and must look exactly as it does
+// today.
+export function CandidateConfidenceBadge({ level, percent, t }) {
+  if (typeof percent !== 'number' || !CONFIDENCE_TONE[level]) return null
+  return (
+    <span
+      className={`absolute right-1 top-1 z-30 rounded-lg border px-1.5 py-0.5 text-[11px] font-black tabular-nums shadow-lg ${CONFIDENCE_TONE[level]}`}
+      title={t('scanner.matchConfidence')}
+      aria-label={`${t('scanner.matchConfidence')}: ${percent}%`}
+    >
+      {percent}%
+    </span>
+  )
 }
 
 function CandidateGrid({ jobId, itemId, matches, onSelect, onZoom, t }) {
@@ -687,6 +688,11 @@ function CandidateGrid({ jobId, itemId, matches, onSelect, onZoom, t }) {
                   <span className="p-1 text-center text-[9px] text-text-muted">{match.name}</span>
                 </div>
               )}
+              <CandidateConfidenceBadge
+                level={match._confidence}
+                percent={match._match_percent}
+                t={t}
+              />
               {match.printed_total_mismatch && (
                 <span
                   className="absolute left-1 top-1 rounded border border-amber-400 bg-amber-500/90 px-1 py-0.5 text-[8px] font-black leading-none text-black"
@@ -721,7 +727,6 @@ function CandidateGrid({ jobId, itemId, matches, onSelect, onZoom, t }) {
                 </button>
               )}
             </div>
-            <CandidateConfidence level={match._confidence} t={t} />
           </div>
         )
       })}
