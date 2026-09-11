@@ -28,16 +28,22 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 
+import numpy as np
+
 from api.auth import get_current_user
 from database import get_db
 from models import User
-from services import fingerprint_index
+from services import card_embedding, fingerprint_index
 from services.card_fingerprint import (
     MAX_DISTANCE,
     SHORTLIST_MAX_DISTANCE,
+    distances,
+    fuse_similarity,
     is_confident,
+    match_leader_counts,
     match_probability,
     photo_hash_variants,
+    rank_fused,
     search_variants,
 )
 from services.scan_storage import (
@@ -56,6 +62,23 @@ router = APIRouter()
 # have the right artwork inside the top 12), so it is part of what the endpoint
 # promises, not an arbitrary page size.
 SHORTLIST = 12
+
+# The shortlist holds twelve distinct ARTWORKS, not twelve rows. 5,313 rows
+# share an artwork URL with another row and 16,897 sit in 8,305 identical-hash
+# groups, so an ungrouped shortlist spent an average of 2.43 of its twelve
+# slots showing one card twice -- 93.9% of shortlists had at least one
+# duplicate. Collapsing them is worth +0.63 points of recall (90.96% -> 91.59%)
+# for the same twelve tiles, because the freed slots go to real candidates.
+#
+# Rows are GROUPED, never dropped. The shortlist exists so the user picks the
+# printing, and the language is part of the printing; a collapsed group carries
+# its other printings in `_other_printings` so they stay one click away.
+#
+# So the scan has to rank more rows than it shows. Four times is comfortably
+# enough: the largest identical-hash group in the real catalogue is 6, and a
+# shortlist would have to be almost entirely duplicates to exhaust 48 rows
+# before finding 12 distinct artworks.
+GROUP_OVERSCAN = 4
 
 # Distance at or below which a candidate is labelled "high". Two-thirds of
 # MAX_DISTANCE (12): on the benchmark the correct row sits at a median distance
@@ -108,6 +131,64 @@ def _confidence(distance: int) -> str:
     return "low"
 
 
+def _artwork_key(row: dict) -> str:
+    """What makes two catalogue rows the same picture.
+
+    `tcg_card_id` is the TCGdex id with the language stripped, so the German and
+    English rows of one card share it while two different cards never do. A row
+    missing it -- which the catalogue should not contain, but a hand-imported
+    one might -- keys on its own id and therefore forms a group of one, rather
+    than silently merging with every other row missing it.
+    """
+    return str(row.get("tcg_card_id") or "") or f"id:{row['id']}"
+
+
+def _group_by_artwork(
+    ranked: list[tuple[int, int]], rows: tuple[dict, ...], limit: int
+) -> list[list[tuple[int, int]]]:
+    """Collapse rows of one artwork into one group, best group first.
+
+    Groups keep the rank order they were found in, so a group's first entry is
+    its closest row and the group list is still ordered by distance. Stops once
+    `limit` distinct artworks have been collected; rows of an artwork already
+    complete are still attached to it, but no new group starts.
+    """
+    groups: list[list[tuple[int, int]]] = []
+    by_key: dict[str, list[tuple[int, int]]] = {}
+    for row_index, distance in ranked:
+        key = _artwork_key(rows[row_index])
+        group = by_key.get(key)
+        if group is None:
+            if len(groups) >= limit:
+                continue
+            group = []
+            by_key[key] = group
+            groups.append(group)
+        group.append((row_index, distance))
+    return groups
+
+
+def _candidate(row: dict, distance: int, percent: int) -> dict:
+    """One shortlist tile, shaped like a /recognize match plus local-only fields."""
+    return {
+        "id": row["id"],
+        "tcg_card_id": row["tcg_card_id"],
+        "name": row["name"],
+        "number": row["number"],
+        "set_id": row["set_id"],
+        "lang": row["lang"],
+        "_lang": row["lang"],
+        "rarity": row["rarity"],
+        "image": row["image"],
+        # Extra, local-only fields. The review UI ignores what it does not know.
+        "_distance": distance,
+        "_confidence": _confidence(distance),
+        # Measured, not derived from the distance arithmetically -- see
+        # card_fingerprint.match_probability.
+        "_match_percent": percent,
+    }
+
+
 def _match_photo(
     raw: bytes,
     snapshot: fingerprint_index.Snapshot,
@@ -115,6 +196,10 @@ def _match_photo(
     sanitized: bool = False,
 ):
     """Sanitize, fingerprint and rank one upload. Runs off the event loop.
+
+    Returns `(ranked, fused)`, where `fused` says whether the accurate path was
+    used -- the caller needs it, because the confidence gate is only calibrated
+    for the other one.
 
     `sanitized` is for the queue worker, whose bytes were already put through
     `sanitize_image_bytes` at enqueue time. Re-encoding them would cost a second
@@ -124,12 +209,38 @@ def _match_photo(
     queries = photo_hash_variants(data)
     if not queries:
         return None
-    return search_variants(
-        queries,
-        snapshot.packed,
-        limit=SHORTLIST,
-        max_distance=SHORTLIST_MAX_DISTANCE,
-    )
+    limit = SHORTLIST * GROUP_OVERSCAN
+
+    if snapshot.embeddings is None:
+        return search_variants(
+            queries, snapshot.packed, limit=limit,
+            max_distance=SHORTLIST_MAX_DISTANCE,
+        ), False
+
+    views = card_embedding.embed_photo_views(data)
+    if not views:
+        # The model is configured but this photo did not survive it. Ranking on
+        # the hash alone is exactly what a row with no embedding already does,
+        # so this degrades rather than fails.
+        return search_variants(
+            queries, snapshot.packed, limit=limit,
+            max_distance=SHORTLIST_MAX_DISTANCE,
+        ), False
+
+    whitened = snapshot.whitening.apply(np.asarray(views, dtype=np.float32))
+    # Best of the views, not their average: the crop and the whole frame are
+    # two framings of one card, and whichever the detector got right should not
+    # be diluted by the one it got wrong.
+    similarity = (whitened @ snapshot.embeddings.T).max(axis=0)
+
+    hamming = distances(queries[0], snapshot.packed)
+    for query in queries[1:]:
+        np.minimum(hamming, distances(query, snapshot.packed), out=hamming)
+
+    scores = fuse_similarity(similarity, hamming, snapshot.embedded)
+    return rank_fused(
+        scores, hamming, limit=limit, max_distance=SHORTLIST_MAX_DISTANCE
+    ), True
 
 
 async def recognize_local_photo(
@@ -163,48 +274,54 @@ async def recognize_local_photo(
 
     try:
         async with _recognition_semaphore():
-            ranked = await run_in_threadpool(
+            result = await run_in_threadpool(
                 _match_photo, raw, snapshot, sanitized=sanitized
             )
     except ScanUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if ranked is None:
+    if result is None:
         raise HTTPException(status_code=400, detail="Could not read the uploaded image.")
+    ranked, fused = result
 
-    confident = is_confident(ranked)
+    # Judged on the ungrouped ranking, deliberately. Collapsing a German and an
+    # English printing into one tile would turn a zero margin into a wide one
+    # and manufacture confidence on exactly the case the hash cannot decide.
+    # `is_confident` only reads the first two entries, so the wider pool the
+    # grouping needs gives it the identical answer it had at limit 12.
+    #
+    # And NOT judged at all on the fused ranking. `MIN_MARGIN` is a number of
+    # bits, measured on a shortlist ordered by those bits; on a fused ranking
+    # the first two entries are not ordered by distance and the difference
+    # between them means nothing. A margin on the fused score is the right
+    # replacement and is not derived yet -- measured so far, a z-score margin
+    # of 1.5 fires on 41.4% of photos at 99.76% artwork and 98.03% printing
+    # precision, against the hash gate's 15.7% at 100% and 99.10%. That is more
+    # coverage for less precision, and which of the two to want is a decision
+    # nobody has made. Until it is made, the accurate path never claims
+    # confidence: its shortlist finds the right artwork 99.90% of the time
+    # against the hash's 90.67%, so the user is being asked to confirm a much
+    # better list, not left without an answer.
+    confident = False if fused else is_confident(ranked)
     rows = snapshot.rows
 
-    # "Leader" means strictly closest, not merely first in the list. Two rows at
-    # the same distance are two rows the hash cannot tell apart -- typically the
-    # German and English printings of one artwork -- and which of them lands at
-    # rank 1 is decided by row index, which carries no evidence at all. Scoring
-    # one as the leader and the other as a tail entry turned that coin flip into
-    # "43% versus 4%" on a real scan, which is not a small overstatement of a
-    # weak signal but an invented one.
-    best_distance = ranked[0][1] if ranked else None
+    groups = _group_by_artwork(ranked, rows, SHORTLIST)
+    leader_counts = match_leader_counts([group[0] for group in groups])
 
     matches = []
-    for row_index, distance in ranked:
-        row = rows[row_index]
-        matches.append({
-            "id": row["id"],
-            "tcg_card_id": row["tcg_card_id"],
-            "name": row["name"],
-            "number": row["number"],
-            "set_id": row["set_id"],
-            "lang": row["lang"],
-            "_lang": row["lang"],
-            "rarity": row["rarity"],
-            "image": row["image"],
-            # Extra, local-only fields. The review UI ignores what it does not know.
-            "_distance": distance,
-            "_confidence": _confidence(distance),
-            # Measured, not derived from the distance arithmetically -- see
-            # card_fingerprint.match_probability.
-            "_match_percent": match_probability(
-                distance, leader=distance == best_distance
-            ),
-        })
+    for group, leaders in zip(groups, leader_counts):
+        # One percentage for the whole group. Every printing in it is the same
+        # picture, so "this is the right artwork" is true of all of them or none
+        # -- unlike two different cards at the same distance, which is what
+        # `leaders` divides the odds between.
+        percent = match_probability(group[0][1], leaders=leaders)
+        printings = [_candidate(rows[i], distance, percent)
+                     for i, distance in group]
+        match = printings[0]
+        if len(printings) > 1:
+            # Grouped, not discarded: the user still has to choose the printing,
+            # and the language is part of it.
+            match["_other_printings"] = printings[1:]
+        matches.append(match)
 
     return {
         # No text was read, so nothing is claimed about the printed identity.

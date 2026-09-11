@@ -14,7 +14,7 @@ import { invalidateCardState, invalidateTcgdexFilterLanguages } from '../utils/q
 import MoneyInput from './MoneyInput'
 import { parseMoneyInputValue } from '../utils/moneyInput'
 import { CardDisplay } from './card-system'
-import { CandidateConfidenceBadge } from './ScanReview'
+import { CandidateConfidenceBadge, CandidatePrintingPicker } from './ScanReview'
 import { tcgdexLanguageLabel } from '../utils/tcgdexLanguages'
 import { isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
 import { hasCatalogueImage } from '../utils/imageUrl'
@@ -546,26 +546,38 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
                     </p>
                     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                       {results.matches.map(match => {
-                        const matchLang = match.lang || match._lang || 'en'
-                        const selected = selectedMatch?.id === match.id
+                        // One tile per artwork; the other language printings of
+                        // the same card are grouped onto it rather than taking
+                        // slots of their own. Whichever the user last picked on
+                        // this tile is the one it shows.
+                        const shown = [match, ...(match._other_printings || [])]
+                          .find(option => option.id === selectedMatch?.id) || match
+                        const matchLang = shown.lang || shown._lang || 'en'
+                        const selected = selectedMatch?.id === shown.id
                           && (selectedMatch?.lang || selectedMatch?._lang || 'en') === matchLang
                         return (
                           <div key={`${match.id}-${matchLang}`}>
                             <CardDisplay
                               variant="selectable"
-                              card={match}
-                              image={match.image}
+                              card={shown}
+                              image={shown.image}
                               languageLabel={tcgdexLanguageLabel(matchLang)}
                               selected={selected}
-                              onClick={() => setSelectedMatch(match)}
-                              onSelect={() => setSelectedMatch(match)}
+                              onClick={() => setSelectedMatch(shown)}
+                              onSelect={() => setSelectedMatch(shown)}
                               overlay={(
                                 <CandidateConfidenceBadge
-                                  level={match._confidence}
-                                  percent={match._match_percent}
+                                  level={shown._confidence}
+                                  percent={shown._match_percent}
                                   t={t}
                                 />
                               )}
+                            />
+                            <CandidatePrintingPicker
+                              match={match}
+                              selectedId={shown.id}
+                              onSelect={setSelectedMatch}
+                              t={t}
                             />
                           </div>
                         )

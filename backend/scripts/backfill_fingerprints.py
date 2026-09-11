@@ -20,7 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import SessionLocal  # noqa: E402
-from services import fingerprint_index  # noqa: E402
+from services import card_embedding, fingerprint_index  # noqa: E402
 from services.fingerprint_backfill import (  # noqa: E402
     DEFAULT_RPS,
     DEFAULT_WORKERS,
@@ -88,8 +88,14 @@ def main() -> int:
         print(f"  catalogue cards        {stats['cards_total']:>8,}")
         print(f"  with artwork           {stats['cards_with_image']:>8,}")
         print(f"  fingerprinted          {stats['cards_fingerprinted']:>8,}"
-              f"  ({stats['coverage']:.1%})")
+              f"  ({stats['coverage']:.1%} of those with artwork,"
+              f" {stats['catalogue_coverage']:.1%} of the catalogue)")
         print(f"  ready for scanning     {'yes' if stats['ready'] else 'not yet':>8}")
+        if card_embedding.available():
+            print(f"  dense embeddings       enabled ({card_embedding.model_path()})")
+        else:
+            print("  dense embeddings       off -- set LOCAL_SCANNER_MODEL to a "
+                  "DINOv2 ONNX export to enable the accurate path")
         # Matches fingerprint_cards' own condition for calling bump_version: a
         # run that only wrote negative-cache provenance (no hash stored,
         # cleared or withheld) never bumps the marker, so the message must not

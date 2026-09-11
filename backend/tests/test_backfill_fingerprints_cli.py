@@ -37,9 +37,12 @@ class BackfillFingerprintsCliTests(unittest.TestCase):
 
     def _run(self, result):
         db = MagicMock()
+        # Must stay the shape fingerprint_index.coverage() really returns; the
+        # CLI prints every key and a stub missing one fails here, loudly, which
+        # is the point of listing them rather than using a MagicMock.
         stats = {
             "cards_total": 0, "cards_with_image": 0, "cards_fingerprinted": 0,
-            "coverage": 0.0, "ready": False,
+            "coverage": 0.0, "catalogue_coverage": 0.0, "ready": False,
         }
         out = io.StringIO()
         with patch.object(backfill_fingerprints, "SessionLocal", return_value=db), \

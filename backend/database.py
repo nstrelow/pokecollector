@@ -92,6 +92,13 @@ def _run_migrations(conn):
         # -- so the ordinary backfill job (not a migration) is what populates
         # them.
         "ALTER TABLE cards ADD COLUMN IF NOT EXISTS image_phash_source VARCHAR",
+        # Optional dense embedding and its provenance, for the offline
+        # scanner's accurate path. Both stay NULL unless the installation opts
+        # in with LOCAL_SCANNER_MODEL, so adding the columns costs an empty
+        # column and nothing else -- Postgres stores a NULL in the row header
+        # bitmap, not in the row.
+        "ALTER TABLE cards ADD COLUMN IF NOT EXISTS image_embedding BYTEA",
+        "ALTER TABLE cards ADD COLUMN IF NOT EXISTS image_embedding_source VARCHAR",
         # Create custom_card_matches table if it doesn't exist (handled by create_all, belt+suspenders)
         """CREATE TABLE IF NOT EXISTS custom_card_matches (
             id SERIAL PRIMARY KEY,

@@ -20,11 +20,27 @@ export const LOCAL_SCANNER_SETTING = 'local_scanner_enabled'
 // Turning it ON needs a usable offline index; turning it OFF must always be
 // possible, or a user whose index stopped being ready is stuck on a scanner
 // that can no longer answer.
+//
+// Two percentages, because the status endpoint reports two and they are not
+// interchangeable:
+//
+//   cataloguePercent  fingerprinted / every catalogue card. What "how much of
+//                     my catalogue can this recognise" actually means, and the
+//                     number the card shows.
+//   backfillPercent   fingerprinted / cards that HAVE artwork. The backfill's
+//                     progress bar, and what readiness is judged on.
+//
+// They read 76% and 97% on the reference catalogue: 22% of cards have a name
+// and a number and no picture at all, so no image method can ever match them.
+// Showing the second under a "catalogue fingerprinted" label overstated the
+// scanner by twenty-one points, which is a promise the feature cannot keep.
 export function localScannerToggleState({ enabled, status, statusFailed, loading, saving }) {
   const ready = status?.ready === true
+  const percent = (value) => Math.round((Number(value) || 0) * 100)
   return {
     ready,
-    coveragePercent: Math.round((Number(status?.coverage) || 0) * 100),
+    cataloguePercent: percent(status?.catalogue_coverage),
+    backfillPercent: percent(status?.coverage),
     disabled: Boolean(saving || loading || (!enabled && (!ready || statusFailed))),
   }
 }
@@ -38,7 +54,7 @@ export function LocalScannerCard({ t }) {
   })
 
   const enabled = settings?.[LOCAL_SCANNER_SETTING] === 'true'
-  const { ready, coveragePercent, disabled } = localScannerToggleState({
+  const { ready, cataloguePercent, backfillPercent, disabled } = localScannerToggleState({
     enabled,
     status,
     statusFailed: isError,
@@ -75,14 +91,24 @@ export function LocalScannerCard({ t }) {
               {t('settings.scannerLocalPreparing')}
               {' '}
               <span className="text-text-muted">
-                {t('settings.scannerLocalCoverage')}: {coveragePercent}%
+                {t('settings.scannerLocalBackfill')}: {backfillPercent}%
               </span>
             </p>
-          ) : enabled ? (
-            <p role="status" className="mt-1.5 text-[11px] font-semibold text-green">
-              {t('settings.scannerLocalEnabled')}
+          ) : (
+            <p role="status" className="mt-1.5 text-[11px]">
+              {enabled && (
+                <span className="font-semibold text-green">
+                  {t('settings.scannerLocalEnabled')}{' '}
+                </span>
+              )}
+              {/* The catalogue fraction, not the backfill's. They differ by
+                  twenty-one points, and this is the one that says what the
+                  scanner can actually recognise. */}
+              <span className="text-text-muted">
+                {t('settings.scannerLocalCoverage')}: {cataloguePercent}%
+              </span>
             </p>
-          ) : null}
+          )}
         </div>
         <button
           type="button"

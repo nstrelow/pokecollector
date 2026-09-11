@@ -123,48 +123,129 @@ MAX_PIXELS = 50_000_000
 # (HASH_BITS - d) / HASH_BITS calls a pure-noise match "78%", because a 64-bit
 # hash over 42k rows puts a photo of nothing 12-20 bits from its nearest
 # neighbour. So this is measured instead -- P(candidate is the right artwork |
-# its distance), over every shortlist entry the production path showed for
-# 7,098 degraded photographs.
+# its distance and its band), over every shortlist entry the production path
+# showed for 7,098 degraded photographs.
 #
-# Split by rank, because the two are wildly different propositions and a single
-# curve would be wrong in both directions. At distance 10 the leader is right
-# 43% of the time and a tail entry 4%:
+# Two things decide it, not one. An earlier version split the shortlist into
+# "rank 1" and "the rest" and gave every row sharing the best distance the
+# rank-1 curve. Those are not the same population: that curve was measured on
+# one row per photo, whichever won an arbitrary row-index tiebreak, while a
+# shortlist's best distance is frequently shared. The result was that the
+# twelve badges summed to more than 100% on 78.7% of shortlists -- mean 170%,
+# worst observed 1008%.
 #
-#   distance      0      2      4      6      8     10     12     14     16
-#   rank 1    91.5%  84.4%  78.9%  75.5%  62.0%  43.1%  28.9%  15.2%   0.0%
-#   rest      44.4%  43.5%  29.5%  21.9%   9.3%   4.4%   3.0%   2.0%   1.2%
+# So the second condition is HOW MANY TILES SHARE THE BEST DISTANCE. A k-way
+# tie is a k-way split of one piece of evidence: at most one of those tiles is
+# the right artwork, so k tiles cannot each be 92% likely. Measured that way,
+# over the shortlists the production path shows for 7,098 degraded photographs
+# (percentages are P(this tile is the right artwork); "--" is fewer than 30
+# observations and is not stored):
 #
-# Only even distances occur, so odd inputs interpolate. Re-measure with
+#   distance        0      2      4      6      8     10     12     14     16
+#   k = 1       98.9%  96.0%  90.9%  84.0%  71.3%  57.1%  44.1%  27.3%    --
+#   k = 2       50.0%  48.1%  46.7%  45.4%  41.3%  32.9%  26.0%  22.5%    --
+#   k = 3       32.3%  32.3%  30.6%  30.6%  22.9%  20.4%  16.5%  16.5%    --
+#   k = 4       25.0%     --     --     --  18.3%  15.6%  13.0%   9.3%    --
+#   k >= 5      12.3%  12.3%  11.9%  11.9%   9.5%   7.2%   5.9%   5.9%  3.9%
+#   not leading  --     4.4%   4.1%   3.3%   2.1%   1.0%   0.8%   0.8%  0.6%
+#
+# k times the leading value never exceeds 100% anywhere in that table, which is
+# the property the old one lacked.
+#
+# MEASURED ON THE GROUPED SHORTLIST. api/recognize_local.py collapses the
+# language printings of one card into a single tile, so k counts distinct
+# artworks the hash could not separate, not rows -- and the trailing values are
+# far lower than they used to be precisely because a trailing tile is now a
+# genuinely different picture rather than the same one again.
+#
+# Stored values are the closest non-increasing fit to the measurements
+# (pool-adjacent-violators, weighted by observation count). The k = 2 and k = 4
+# rows were already monotone; k = 1, 3 and 5 each had one upward wobble on a
+# few hundred observations, and a badge that scores a further card higher than
+# a nearer one is worse than a slightly smoothed one.
+#
+# Where a row's observations run out it defers to the next WIDER tie rather
+# than clamping to its own last value: a unique leader at distance 16 was seen
+# twice, both times wrong, and clamping would have printed 27% for it.
+#
+# Only even distances occur -- both hashes have exactly 32 set bits, so their
+# XOR has even weight -- so odd inputs interpolate. Re-measure with
 # pokecard-bench/calibrate_distance.py if the hash or the shortlist changes.
-_LEADER_PROBABILITY = {
-    0: 0.915, 2: 0.844, 4: 0.789, 6: 0.755, 8: 0.620,
-    10: 0.431, 12: 0.289, 14: 0.152, 16: 0.02, 18: 0.01,
+MAX_TIE_BAND = 5
+
+_LEADING_TILE_PROBABILITY = {
+    1: {0: 0.989, 2: 0.960, 4: 0.909, 6: 0.840, 8: 0.713,
+        10: 0.571, 12: 0.441, 14: 0.273},
+    2: {0: 0.500, 2: 0.481, 4: 0.467, 6: 0.454, 8: 0.413,
+        10: 0.329, 12: 0.260, 14: 0.225},
+    3: {0: 0.323, 2: 0.323, 4: 0.306, 6: 0.306, 8: 0.229,
+        10: 0.204, 12: 0.165, 14: 0.165},
+    4: {0: 0.250, 8: 0.183, 10: 0.156, 12: 0.130, 14: 0.093},
+    5: {0: 0.123, 2: 0.123, 4: 0.119, 6: 0.119, 8: 0.095,
+        10: 0.072, 12: 0.059, 14: 0.059, 16: 0.039},
 }
-_RUNNER_UP_PROBABILITY = {
-    0: 0.444, 2: 0.435, 4: 0.295, 6: 0.219, 8: 0.093,
-    10: 0.044, 12: 0.030, 14: 0.020, 16: 0.012, 18: 0.003,
+_TRAILING_TILE_PROBABILITY = {
+    2: 0.044, 4: 0.041, 6: 0.033, 8: 0.021, 10: 0.010,
+    12: 0.008, 14: 0.008, 16: 0.006, 18: 0.002,
 }
 
 
-def match_probability(distance: int, *, leader: bool) -> int:
-    """Measured chance this candidate is the right artwork, as a percentage.
+def match_leader_counts(shortlist: list[tuple[int, int]]) -> list[int]:
+    """Per entry: how many entries share the best distance, or 0 if it doesn't.
 
-    `leader` distinguishes the top of the shortlist from the rest of it; see
-    `_LEADER_PROBABILITY` for why that is not a detail.
+    Feed this the shortlist as the user will see it -- grouped, one tile per
+    artwork -- because that is the population `_LEADING_TILE_PROBABILITY` was
+    measured on and the set of tiles whose badges have to add up.
+
+    "Leader" has to mean *strictly* closest, and when nothing is strictly
+    closest, nothing is the leader. Two tiles at the same distance are two the
+    hash cannot tell apart, and which lands at rank 1 is decided by row index,
+    which carries no evidence at all. Calling the tiebreak winner the leader
+    invented a difference; calling both of them leaders inflated both.
     """
-    table = _LEADER_PROBABILITY if leader else _RUNNER_UP_PROBABILITY
+    if not shortlist:
+        return []
+    best = shortlist[0][1]
+    leaders = sum(1 for _, distance in shortlist if distance == best)
+    return [leaders if distance == best else 0 for _, distance in shortlist]
+
+
+def match_probability(distance: int, *, leaders: int) -> int:
+    """Measured chance this tile is the right artwork, as a percentage.
+
+    `leaders` comes from `match_leader_counts`: 0 for a tile that is not at the
+    best distance, otherwise how many tiles share it. See
+    `_LEADING_TILE_PROBABILITY` for why the width of a tie is not a detail.
+
+    Floored at 1 rather than rounded to 0. The lowest measured value is 0.2%,
+    which is not zero, and a tile the UI is actively offering should not be
+    labelled impossible.
+    """
+    if leaders <= 0:
+        return _interpolate(_TRAILING_TILE_PROBABILITY, distance)
+    band = min(leaders, MAX_TIE_BAND)
+    table = _LEADING_TILE_PROBABILITY[band]
+    if distance > max(table):
+        if band < MAX_TIE_BAND:
+            return match_probability(distance, leaders=band + 1)
+        return _interpolate(_TRAILING_TILE_PROBABILITY, distance)
+    return _interpolate(table, distance)
+
+
+def _interpolate(table: dict[int, float], distance: int) -> int:
+    """A measured curve read at `distance`, as a whole percentage."""
     known = sorted(table)
     if distance <= known[0]:
-        return round(table[known[0]] * 100)
+        return max(1, round(table[known[0]] * 100))
     if distance >= known[-1]:
-        return round(table[known[-1]] * 100)
+        return max(1, round(table[known[-1]] * 100))
     for lower, upper in zip(known, known[1:]):
         if lower <= distance <= upper:
             span = upper - lower
             weight = (distance - lower) / span
             blended = table[lower] + (table[upper] - table[lower]) * weight
-            return round(blended * 100)
-    return 0
+            return max(1, round(blended * 100))
+    return 1
 
 # --- card detection -------------------------------------------------------
 _WORK_WIDTH = 320
@@ -600,6 +681,73 @@ def search_variants(
     for query in queries[1:]:
         np.minimum(best, distances(query, index), out=best)
     return _rank(best, limit, max_distance)
+
+
+def _zscore(values: np.ndarray) -> np.ndarray:
+    """Centre and scale one query's scores so two signals can be added.
+
+    Per query, not per corpus: a photograph that matches nothing has a
+    different distance distribution from one that matches perfectly, and a
+    fixed scale would let the easy photographs set the weight for the hard
+    ones.
+    """
+    spread = float(values.std())
+    if spread <= 1e-9:
+        return np.zeros_like(values, dtype=np.float64)
+    return (values.astype(np.float64) - float(values.mean())) / spread
+
+
+def fuse_similarity(
+    similarity: np.ndarray, distances_: np.ndarray, embedded: np.ndarray | None = None
+) -> np.ndarray:
+    """Combine an embedding's similarity with the hash's distance, higher-better.
+
+    No weight. A per-query z-score sum reaches 99.94% / 89.98% on the
+    7,098-photo set against a tuned weight's 99.93% / 90.14% -- indistinguish-
+    able, with nothing fitted to the benchmark it is scored on. The tuned
+    sweep's optimum also sat at 0.8-1.2 with a broad, flat top, which is what a
+    parameter looks like when it did not need to exist.
+
+    Keeping the hash is not sentiment. The embedding is far better at finding
+    the artwork and no better at choosing between two language printings of it,
+    because those are the same picture; their 64-bit hashes are of different
+    renders and do differ slightly. Fusing recovers 10.3 points of exact-
+    printing rank-1 (71.20% -> 81.52%) that the embedding alone leaves behind.
+
+    `embedded` marks rows that actually have an embedding. A row without one
+    gets the mean similarity -- a neutral prior, so it competes on its hash
+    alone instead of being buried by a zero vector it never earned.
+    """
+    scores = np.asarray(similarity, dtype=np.float64).copy()
+    if embedded is not None and not embedded.all():
+        present = scores[embedded]
+        scores[~embedded] = float(present.mean()) if present.size else 0.0
+    return _zscore(scores) - _zscore(np.asarray(distances_))
+
+
+def rank_fused(
+    scores: np.ndarray, distances_: np.ndarray, limit: int = 12,
+    max_distance: int | None = None,
+) -> list[tuple[int, int]]:
+    """The `limit` best rows of a fused score, reported with their distances.
+
+    The shortlist still carries Hamming distances, because that is what the
+    confidence gate, the `_confidence` label and the measured percentage are
+    all defined on. `max_distance` still cuts on the distance for the same
+    reason: a fused score has no bit meaning and no measured cutoff.
+    """
+    n = int(scores.shape[0])
+    take = min(limit, n)
+    if take <= 0:
+        return []
+    picked = (
+        np.argpartition(-scores, take - 1)[:take] if take < n else np.arange(n)
+    )
+    order = picked[np.lexsort((_row_ids(n)[picked], -scores[picked]))]
+    ranked = [(int(i), int(distances_[i])) for i in order]
+    if max_distance is not None:
+        ranked = [pair for pair in ranked if pair[1] <= max_distance]
+    return ranked
 
 
 def is_confident(ranked: list[tuple[int, int]]) -> bool:

@@ -774,6 +774,42 @@ class PhotoVariantTests(unittest.TestCase):
             self.assertIsNone(fingerprint_photo(photo))
 
 
+class MatchLeaderCountTests(unittest.TestCase):
+    """Which tiles are leaders, and how many of them there are."""
+
+    def test_nothing_is_the_leader_when_nothing_is_strictly_closest(self):
+        """Two tiles at the same distance are two the hash cannot separate.
+
+        Which of them lands at rank 1 is decided by row index, which carries no
+        evidence at all, so neither gets the odds of a tile that actually won.
+        """
+        self.assertEqual(
+            card_fingerprint.match_leader_counts([(0, 4), (1, 4), (2, 10)]),
+            [2, 2, 0],
+        )
+
+    def test_a_strictly_closest_tile_leads_alone(self):
+        self.assertEqual(
+            card_fingerprint.match_leader_counts([(0, 2), (1, 4), (2, 4)]),
+            [1, 0, 0],
+        )
+
+    def test_the_count_is_the_width_of_the_tie_not_a_flag(self):
+        """A four-way tie has to divide the odds four ways, not two."""
+        self.assertEqual(
+            card_fingerprint.match_leader_counts(
+                [(0, 6), (1, 6), (2, 6), (3, 6), (4, 8)]
+            ),
+            [4, 4, 4, 4, 0],
+        )
+
+    def test_a_lone_candidate_leads(self):
+        self.assertEqual(card_fingerprint.match_leader_counts([(0, 8)]), [1])
+
+    def test_an_empty_shortlist_has_no_leaders(self):
+        self.assertEqual(card_fingerprint.match_leader_counts([]), [])
+
+
 class MatchProbabilityTests(unittest.TestCase):
     """The percentage printed on a candidate is measured, not derived."""
 
@@ -787,45 +823,105 @@ class MatchProbabilityTests(unittest.TestCase):
         """
         naive = round((HASH_BITS - 14) / HASH_BITS * 100)
         self.assertEqual(naive, 78)
-        self.assertLess(card_fingerprint.match_probability(14, leader=True), 40)
-        self.assertLess(card_fingerprint.match_probability(14, leader=False), 10)
+        self.assertLess(card_fingerprint.match_probability(14, leaders=1), 40)
+        self.assertLess(card_fingerprint.match_probability(14, leaders=0), 10)
 
     def test_the_leader_and_the_tail_are_not_the_same_proposition(self):
         for distance in (0, 4, 8, 10, 12):
             with self.subTest(distance=distance):
                 self.assertGreater(
-                    card_fingerprint.match_probability(distance, leader=True),
-                    card_fingerprint.match_probability(distance, leader=False),
+                    card_fingerprint.match_probability(distance, leaders=1),
+                    card_fingerprint.match_probability(distance, leaders=0),
                 )
 
+    def test_a_wider_tie_is_worse_odds_for_every_tile_in_it(self):
+        """The evidence does not multiply by being shared."""
+        for distance in (0, 4, 8, 12):
+            with self.subTest(distance=distance):
+                values = [
+                    card_fingerprint.match_probability(distance, leaders=k)
+                    for k in range(1, card_fingerprint.MAX_TIE_BAND + 1)
+                ]
+                self.assertEqual(values, sorted(values, reverse=True))
+
+    def test_tied_tiles_cannot_add_up_to_more_than_a_certainty(self):
+        """The defect this table replaced: twelve badges summing to 1008%.
+
+        At most one tile in a tie is the right artwork, so k tiles each showing
+        P must satisfy k * P <= 100. The old table gave every tied row the
+        rank-1 curve and broke this on 78.7% of real shortlists.
+        """
+        for k in range(1, 9):
+            for distance in range(0, 26, 2):
+                with self.subTest(k=k, distance=distance):
+                    total = k * card_fingerprint.match_probability(
+                        distance, leaders=k
+                    )
+                    self.assertLessEqual(total, 100)
+
     def test_it_falls_as_distance_grows(self):
-        for leader in (True, False):
-            values = [
-                card_fingerprint.match_probability(d, leader=leader)
-                for d in range(0, 20, 2)
-            ]
-            self.assertEqual(values, sorted(values, reverse=True))
+        for leaders in (0, 1, 2, 3, 5, 9):
+            with self.subTest(leaders=leaders):
+                values = [
+                    card_fingerprint.match_probability(d, leaders=leaders)
+                    for d in range(0, 20, 2)
+                ]
+                self.assertEqual(values, sorted(values, reverse=True))
 
     def test_odd_distances_interpolate_between_the_measured_ones(self):
-        for leader in (True, False):
-            low = card_fingerprint.match_probability(10, leader=leader)
-            high = card_fingerprint.match_probability(8, leader=leader)
-            middle = card_fingerprint.match_probability(9, leader=leader)
-            self.assertLessEqual(low, middle)
-            self.assertLessEqual(middle, high)
+        for leaders in (0, 1, 2, 3):
+            with self.subTest(leaders=leaders):
+                low = card_fingerprint.match_probability(10, leaders=leaders)
+                high = card_fingerprint.match_probability(8, leaders=leaders)
+                middle = card_fingerprint.match_probability(9, leaders=leaders)
+                self.assertLessEqual(low, middle)
+                self.assertLessEqual(middle, high)
 
     def test_it_stays_a_percentage_at_and_beyond_both_ends(self):
         for distance in (-5, 0, 1, 24, 64, 1000):
-            for leader in (True, False):
-                with self.subTest(distance=distance, leader=leader):
-                    value = card_fingerprint.match_probability(distance, leader=leader)
+            for leaders in (0, 1, 2, 5, 40):
+                with self.subTest(distance=distance, leaders=leaders):
+                    value = card_fingerprint.match_probability(
+                        distance, leaders=leaders
+                    )
                     self.assertIsInstance(value, int)
-                    self.assertGreaterEqual(value, 0)
+                    self.assertGreaterEqual(value, 1)
                     self.assertLessEqual(value, 100)
+
+    def test_a_tie_wider_than_the_measured_bands_is_not_an_error(self):
+        """Ties of 9 and more exist; they share the widest measured curve."""
+        widest = card_fingerprint.match_probability(
+            4, leaders=card_fingerprint.MAX_TIE_BAND
+        )
+        self.assertEqual(card_fingerprint.match_probability(4, leaders=40), widest)
+
+    def test_a_distance_a_band_never_saw_defers_to_a_wider_tie(self):
+        """A unique leader at distance 16 was observed twice, both times wrong.
+
+        Clamping to the band's own last value would print 27% for it. Deferring
+        to the widest measured tie prints what a tile that far out is actually
+        worth, without inventing a number for a cell with no observations.
+        """
+        self.assertLess(
+            card_fingerprint.match_probability(16, leaders=1),
+            card_fingerprint.match_probability(14, leaders=1),
+        )
+        self.assertEqual(
+            card_fingerprint.match_probability(16, leaders=1),
+            card_fingerprint.match_probability(16, leaders=card_fingerprint.MAX_TIE_BAND),
+        )
 
     def test_a_perfect_hash_match_is_still_not_a_certainty(self):
         """Distance 0 means identical artwork, which reprints genuinely share."""
-        self.assertLess(card_fingerprint.match_probability(0, leader=True), 100)
+        self.assertLess(card_fingerprint.match_probability(0, leaders=1), 100)
+
+    def test_a_unique_leader_is_no_longer_understated(self):
+        """The old blended curve called a strictly-closest distance-0 match 92%.
+
+        It was measured at 98.9%, and the understatement came from averaging it
+        with the tied case rather than from any property of the match.
+        """
+        self.assertGreaterEqual(card_fingerprint.match_probability(0, leaders=1), 98)
 
 
 class SearchVariantsTests(unittest.TestCase):

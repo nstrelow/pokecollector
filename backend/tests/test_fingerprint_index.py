@@ -501,6 +501,53 @@ class FingerprintIndexTests(unittest.TestCase):
         self.db.commit()
         self.assertEqual(fingerprint_index.coverage(self.db)["cards_total"], 1)
 
+    def test_the_two_coverage_fractions_answer_different_questions(self):
+        """97% and 76% on the same catalogue, and only one of them is "coverage".
+
+        `coverage` is over cards that HAVE artwork -- the backfill's progress
+        bar, which reaches 1.0 while a fifth of the catalogue is still
+        unmatchable. `catalogue_coverage` is over every indexable card. On the
+        reference catalogue those read 97.2% and 75.8%, because 12,893 of
+        58,630 cards have a name and a number and no picture at all, and the
+        settings card was printing the first under a label that promised the
+        second.
+        """
+        for i in range(3):
+            self._card(f"has-art-{i}_en")
+        self._card("no-art_en", images_small=None, image_phash=None)
+        self.db.commit()
+
+        stats = fingerprint_index.coverage(self.db)
+        self.assertEqual(stats["cards_total"], 4)
+        self.assertEqual(stats["cards_with_image"], 3)
+        self.assertEqual(stats["cards_fingerprinted"], 3)
+        self.assertEqual(stats["coverage"], 1.0)
+        self.assertEqual(stats["catalogue_coverage"], 0.75)
+
+    def test_neither_fraction_divides_by_zero_on_an_empty_catalogue(self):
+        stats = fingerprint_index.coverage(self.db)
+        self.assertEqual(stats["coverage"], 0.0)
+        self.assertEqual(stats["catalogue_coverage"], 0.0)
+
+    def test_readiness_still_asks_about_the_work_available_not_the_gaps(self):
+        """A catalogue that is mostly artwork-less is not a half-built index.
+
+        Readiness gates whether the scanner may answer at all, and tying it to
+        `catalogue_coverage` would refuse to answer forever on a catalogue whose
+        Japanese half TCGdex has no pictures for -- even with every hashable
+        card hashed.
+        """
+        for i in range(600):
+            self._card(f"art-{i:04d}_en")
+        for i in range(2000):
+            self._card(f"none-{i:04d}_en", images_small=None, image_phash=None)
+        self.db.commit()
+
+        stats = fingerprint_index.coverage(self.db)
+        self.assertEqual(stats["coverage"], 1.0)
+        self.assertLess(stats["catalogue_coverage"], 0.25)
+        self.assertTrue(stats["ready"])
+
     def test_coverage_can_never_exceed_one(self):
         """It divided hashes by artwork URLs and those are different sets.
 

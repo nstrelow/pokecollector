@@ -92,6 +92,18 @@ class Card(Base):
     # records "this URL was tried and is permanently unusable", so a card whose
     # render never decodes stops reappearing at the head of every batch.
     image_phash_source = Column(String, nullable=True)
+    # Optional dense embedding of the same artwork, for the offline scanner's
+    # accurate path (services/card_embedding.py). NULL on every install that
+    # has not opted into the model, which is the default; such a row is simply
+    # ranked on its perceptual hash alone, so the two coexist while a backfill
+    # catches up.
+    image_embedding = Column(LargeBinary, nullable=True)
+    # Provenance, exactly as image_phash_source is -- but it also has to cover
+    # the MODEL, not just the URL. A hash has one definition and always has; an
+    # embedding's definition is a model file, and a different model produces
+    # vectors that are meaningless against the stored ones while looking
+    # perfectly valid. See card_embedding.source_marker.
+    image_embedding_source = Column(String, nullable=True)
     image_source_lang = Column(String, nullable=True)  # Set when images are copied from another TCGdex language
     data_source_lang = Column(String, nullable=True)   # Set when metadata is copied from another TCGdex language
     custom_image_url = Column(String, nullable=True)   # Manual temporary fallback while TCGdex has no image

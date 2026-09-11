@@ -343,6 +343,138 @@ class LocalRecognitionApiTests(unittest.TestCase):
         self.assertEqual(body["coverage"], 0.5)
         self.assertFalse(body["ready"])
 
+    # --- one tile per artwork -----------------------------------------------
+
+    def test_two_printings_of_one_artwork_become_one_tile(self):
+        """swsh12.5-036_de and swsh12.5-036_en are one picture, not two slots.
+
+        An ungrouped shortlist spent an average of 2.43 of its twelve slots
+        showing one card twice, on 93.9% of shortlists. Asserted against the
+        endpoint rather than against a copy of its rule, so a change to the
+        rule cannot leave this green.
+        """
+        target = _card_image(2)
+        self._add_card("twin_de", image=target, lang="de")
+        self._add_card("twin_en", image=target, lang="en")
+        for seed in range(40, 46):
+            self._add_card(f"sv1-{seed}_en", image=_card_image(seed))
+
+        matches = self._post(_jpeg(target)).json()["matches"]
+        ids = [match["id"] for match in matches]
+        self.assertEqual(len(ids), len(set(ids)), "no row may appear twice")
+        self.assertEqual(matches[0]["tcg_card_id"], "twin")
+        self.assertEqual(
+            [p["id"] for p in matches[0].get("_other_printings", [])],
+            ["twin_en"],
+            "the other printing must be carried, never dropped",
+        )
+        self.assertNotIn("twin_en", ids[1:],
+                         "a grouped printing must not also take a slot of its own")
+
+    def test_grouping_frees_the_slot_for_a_real_candidate(self):
+        """The point of collapsing duplicates is what fills the space."""
+        target = _card_image(3)
+        self._add_card("dup_de", image=target, lang="de")
+        self._add_card("dup_en", image=target, lang="en")
+        for seed in range(50, 62):
+            self._add_card(f"sv1-{seed}_en", image=_card_image(seed))
+
+        with patch("api.recognize_local.SHORTLIST_MAX_DISTANCE", 64):
+            matches = self._post(_jpeg(target)).json()["matches"]
+        self.assertEqual(len(matches), 12)
+        self.assertEqual(
+            len({match["tcg_card_id"] for match in matches}), 12,
+            "twelve tiles must be twelve different artworks",
+        )
+
+    def test_a_grouped_printing_keeps_everything_needed_to_pick_it(self):
+        """The user still has to choose the language; hiding it is not grouping."""
+        target = _card_image(4)
+        self._add_card("pair_de", image=target, lang="de")
+        self._add_card("pair_en", image=target, lang="en")
+        self._add_card("sv1-70_en", image=_card_image(70))
+
+        alternate = self._post(_jpeg(target)).json()["matches"][0]["_other_printings"][0]
+        for field in ("id", "tcg_card_id", "name", "number", "set_id", "lang",
+                      "_lang", "rarity", "image", "_distance", "_confidence",
+                      "_match_percent"):
+            self.assertIn(field, alternate)
+        self.assertEqual(alternate["lang"], "en")
+
+    def test_a_card_with_no_catalogue_id_is_never_merged_into_another(self):
+        """A missing grouping key must make a group of one, not one big group."""
+        first, second = _card_image(5), _card_image(6)
+        self._add_card("loose-a_en", image=first, tcg_card_id=None)
+        self._add_card("loose-b_en", image=second, tcg_card_id=None)
+
+        with patch("api.recognize_local.SHORTLIST_MAX_DISTANCE", 64):
+            matches = self._post(_jpeg(first)).json()["matches"]
+        self.assertEqual({m["id"] for m in matches}, {"loose-a_en", "loose-b_en"})
+        self.assertNotIn("_other_printings", matches[0])
+
+    # --- what the badge is allowed to claim ---------------------------------
+
+    def test_the_badges_on_one_shortlist_cannot_exceed_a_certainty(self):
+        """The defect this replaced: twelve badges summing to 1008%.
+
+        Four different cards sharing one hash is a four-way split of a single
+        piece of evidence, and at most one of them is the right artwork.
+        """
+        shared = _card_image(7)
+        for i in range(4):
+            self._add_card(f"quad-{i}_en", image=shared)
+        self._add_card("sv1-80_en", image=_card_image(80))
+
+        matches = self._post(_jpeg(shared)).json()["matches"]
+        tied = [m for m in matches if m["_distance"] == matches[0]["_distance"]]
+        self.assertEqual(len(tied), 4, "four distinct artworks should tie here")
+        self.assertLessEqual(sum(m["_match_percent"] for m in tied), 100)
+        self.assertEqual(
+            len({m["_match_percent"] for m in tied}), 1,
+            "rows the hash cannot separate must not be given different odds",
+        )
+
+    def test_a_tile_that_wins_outright_beats_one_that_shares_the_lead(self):
+        """Being tied is evidence, and it is the evidence the old badge lost.
+
+        One index, two photographs: the same distance and the same shortlist
+        position must still yield different numbers, because a four-way tie is
+        not the same claim as an outright win.
+        """
+        alone, shared = _card_image(8), _card_image(9)
+        self._add_card("alone_en", image=alone)
+        for i in range(4):
+            self._add_card(f"share-{i}_en", image=shared)
+        for seed in range(90, 96):
+            self._add_card(f"sv1-{seed}_en", image=_card_image(seed))
+
+        outright = self._post(_jpeg(alone)).json()["matches"][0]
+        tied = self._post(_jpeg(shared)).json()["matches"][0]
+
+        self.assertEqual(outright["_distance"], 0)
+        self.assertEqual(tied["_distance"], 0)
+        self.assertGreater(outright["_match_percent"], tied["_match_percent"])
+
+    def test_grouping_never_manufactures_confidence(self):
+        """Collapsing a twin would turn a zero margin into a wide one.
+
+        The margin gate is the only thing between the scanner and confidently
+        naming the wrong language, so it is judged on the ungrouped ranking even
+        though the shortlist the user sees is grouped.
+        """
+        target = _card_image(10)
+        self._add_card("lang_de", image=target, lang="de")
+        self._add_card("lang_en", image=target, lang="en")
+        for seed in range(110, 118):
+            self._add_card(f"sv1-{seed}_en", image=_card_image(seed))
+
+        body = self._post(_jpeg(target)).json()
+        self.assertEqual(len(body["matches"][0].get("_other_printings", [])), 1)
+        self.assertFalse(
+            body["_identity_confident"],
+            "one artwork in two languages is exactly what the hash cannot decide",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
@@ -392,36 +524,3 @@ class ConcurrencyLimiterTests(unittest.TestCase):
         first, second = asyncio.run(twice())
         self.assertIs(first, second)
         self.assertEqual(MAX_CONCURRENT_LOCAL_RECOGNITIONS, 4)
-
-
-@unittest.skipUnless(DEPS_AVAILABLE, "Scanner dependencies are not installed")
-class TiedCandidatePercentageTests(unittest.TestCase):
-    """Rows the hash cannot separate must not be given different odds."""
-
-    def test_candidates_at_the_same_distance_share_a_percentage(self):
-        from api.recognize_local import match_probability
-
-        # A real scan put swsh12.5-036_de and swsh12.5-036_en both at distance
-        # 10 -- one artwork, two language printings, indistinguishable to a
-        # perceptual hash. Scoring by list position made that 43% against 4%.
-        tied = 10
-        leader = match_probability(tied, leader=True)
-        self.assertEqual(match_probability(tied, leader=True), leader)
-        self.assertNotEqual(leader, match_probability(tied, leader=False))
-
-    def test_the_endpoint_gives_tied_rows_equal_odds(self):
-        from api import recognize_local
-
-        ranked = [(0, 10), (1, 10), (2, 14)]
-        rows = [
-            {"id": f"card-{i}", "tcg_card_id": "x", "name": "n", "number": "1",
-             "set_id": "s", "lang": "en", "rarity": None, "image": None}
-            for i in range(3)
-        ]
-        best = ranked[0][1]
-        percents = [
-            recognize_local.match_probability(d, leader=d == best) for _, d in ranked
-        ]
-        self.assertEqual(percents[0], percents[1], "tied rows must score equally")
-        self.assertLess(percents[2], percents[0], "a worse distance must score lower")
-        del rows

@@ -644,16 +644,62 @@ export function CandidateConfidenceBadge({ level, percent, t }) {
   )
 }
 
+// Offline recognition shows one tile per ARTWORK, so a card printed in several
+// languages no longer eats several of the twelve slots. The other printings are
+// grouped onto the tile rather than discarded -- the shortlist exists so the
+// user picks the printing, and the language is part of the printing.
+//
+// The provider scanner never sends `_other_printings`, so this renders nothing
+// for it and that grid is unchanged.
+export function CandidatePrintingPicker({ match, selectedId, onSelect, t }) {
+  const printings = match?._other_printings
+  if (!printings?.length) return null
+  const options = [match, ...printings]
+  return (
+    <div className="mt-1 flex flex-wrap gap-1" role="group" aria-label={t('scanner.otherPrintings')}>
+      {options.map(option => {
+        const language = (option.lang || option._lang || 'en').toUpperCase()
+        const active = (selectedId ?? match.id) === option.id
+        return (
+          <button
+            key={option.id}
+            type="button"
+            aria-pressed={active}
+            onClick={event => {
+              event.stopPropagation()
+              onSelect?.(option)
+            }}
+            className={`rounded-md border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide transition-colors ${
+              active
+                ? 'border-brand-red/60 bg-brand-red/20 text-text-primary'
+                : 'border-white/10 bg-white/[0.04] text-text-muted hover:text-text-primary'
+            }`}
+          >
+            {language}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
 function CandidateGrid({ jobId, itemId, matches, onSelect, onZoom, t }) {
   usePrefetchMatchImages(matches)
+  // Which printing each grouped tile is currently showing, keyed by the tile's
+  // own id. Empty means "the closest one", which is what the tile leads with.
+  const [pickedPrinting, setPickedPrinting] = useState({})
 
   if (!matches?.length) return null
 
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
       {matches.map((match, matchIndex) => {
-        const language = match.lang || match._lang || 'en'
-        const hdImage = match.image_hd || match.image?.replace('/low.webp', '/high.webp') || match.image
+        // A grouped tile shows whichever printing was last picked on it, so
+        // the artwork keeps one slot and the language is still a choice.
+        const shown = [match, ...(match._other_printings || [])]
+          .find(option => option.id === pickedPrinting[match.id]) || match
+        const language = shown.lang || shown._lang || 'en'
+        const hdImage = shown.image_hd || shown.image?.replace('/low.webp', '/high.webp') || shown.image
         return (
           <div
             key={`${match.id}-${language}`}
@@ -666,12 +712,12 @@ function CandidateGrid({ jobId, itemId, matches, onSelect, onZoom, t }) {
           >
             <button
               type="button"
-              onClick={() => onZoom(match, matchIndex)}
+              onClick={() => onZoom(shown, matchIndex)}
               aria-label={t('scanner.compareCandidate')}
               title={t('scanner.compareCandidate')}
               className="relative aspect-[2.5/3.5] w-full overflow-hidden rounded-xl text-left ring-1 ring-white/5 transition-all duration-200 group-hover:ring-2 group-hover:ring-brand-red/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-red"
             >
-              {match.image ? (
+              {shown.image ? (
                 // CardImage, not a bare <img>: a candidate URL failing to load
                 // (not just being absent) needs the same "artwork unavailable,
                 // retry" state every other card image gets — a broken image
@@ -681,16 +727,16 @@ function CandidateGrid({ jobId, itemId, matches, onSelect, onZoom, t }) {
                 // are large enough that the icon-only compact mode used for
                 // small thumbnails elsewhere reads as unexplained, same
                 // complaint this is fixing in the first place.
-                <CardImage src={match.image} alt={match.name}
+                <CardImage src={shown.image} alt={shown.name}
                   className="h-full w-full object-cover shadow-lg transition-transform duration-300 group-hover:scale-[1.02]" />
               ) : (
                 <div className="flex h-full w-full items-center justify-center rounded-xl bg-bg-surface">
-                  <span className="p-1 text-center text-[9px] text-text-muted">{match.name}</span>
+                  <span className="p-1 text-center text-[9px] text-text-muted">{shown.name}</span>
                 </div>
               )}
               <CandidateConfidenceBadge
-                level={match._confidence}
-                percent={match._match_percent}
+                level={shown._confidence}
+                percent={shown._match_percent}
                 t={t}
               />
               {match.printed_total_mismatch && (
@@ -706,18 +752,18 @@ function CandidateGrid({ jobId, itemId, matches, onSelect, onZoom, t }) {
 
             <div className="flex items-start gap-1 pt-1">
               <div className="min-w-0 flex-1">
-                <p className="line-clamp-2 text-[10px] font-bold leading-tight text-white">{match.name}</p>
-                {(match.set_abbreviation || match.number) && (
+                <p className="line-clamp-2 text-[10px] font-bold leading-tight text-white">{shown.name}</p>
+                {(shown.set_abbreviation || shown.number) && (
                   <p className="text-[9px] font-mono font-semibold text-brand-red/80">
-                    {`${(match.set_abbreviation || '').toUpperCase()} ${match.number || ''}`.trim()}
+                    {`${(shown.set_abbreviation || '').toUpperCase()} ${shown.number || ''}`.trim()}
                   </p>
                 )}
-                {match.rarity && <p className="truncate text-[9px] text-text-muted">{match.rarity}</p>}
+                {shown.rarity && <p className="truncate text-[9px] text-text-muted">{shown.rarity}</p>}
               </div>
               {onSelect && (
                 <button
                   type="button"
-                  onClick={() => onSelect(match)}
+                  onClick={() => onSelect(shown)}
                   title={t('scanner.addToCollection')}
                   aria-label={t('scanner.addToCollection')}
                   className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full transition-transform hover:scale-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-red"
@@ -727,6 +773,15 @@ function CandidateGrid({ jobId, itemId, matches, onSelect, onZoom, t }) {
                 </button>
               )}
             </div>
+            <CandidatePrintingPicker
+              match={match}
+              selectedId={shown.id}
+              onSelect={option => {
+                setPickedPrinting(current => ({ ...current, [match.id]: option.id }))
+                onSelect?.(option)
+              }}
+              t={t}
+            />
           </div>
         )
       })}

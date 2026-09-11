@@ -35,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models import Card, Setting
+from services import card_embedding
 from services.card_fingerprint import HASH_BYTES
 from services.card_visibility import indexable_card_filter
 
@@ -71,6 +72,42 @@ def _is_ready(with_hash: int, with_image: int) -> bool:
     return with_hash >= READY_MIN_CARDS and fraction >= READY_COVERAGE
 
 
+# How many dimensions the whitened embedding index keeps. Measured over the
+# 42,254-card index: no whitening scores 99.07% / 86.01%, 128 dimensions is
+# WORSE than none at 99.04% / 84.81%, 256 reaches 99.65% / 86.18%, and 384
+# gains a further 0.07 points for 10MB more resident memory. 256 is the rare
+# change that improves accuracy and cuts cost at the same time.
+WHITENING_DIMS = 256
+
+# Ridge on the eigenvalues, so a near-zero direction is damped rather than
+# amplified into the dominant one.
+_WHITENING_EPSILON = 1e-4
+
+# Below this many embedded rows, the whitening covariance is fitted on too
+# little to mean anything and the accurate path is not used at all.
+MIN_EMBEDDED_CARDS = 256
+
+
+@dataclass(frozen=True)
+class Whitening:
+    """The PCA whitening fitted to one snapshot's embeddings.
+
+    Carried on the snapshot rather than stored in the database, because it is a
+    property of the index as loaded: fitting it at load time costs one 768x768
+    eigendecomposition (milliseconds) and guarantees the query is projected
+    through exactly the transform the stored vectors were, which a persisted
+    matrix could drift from the moment one row is re-embedded.
+    """
+
+    mean: np.ndarray
+    projection: np.ndarray
+
+    def apply(self, vectors: np.ndarray) -> np.ndarray:
+        projected = (vectors - self.mean) @ self.projection
+        norms = np.linalg.norm(projected, axis=1, keepdims=True)
+        return (projected / (norms + 1e-9)).astype(np.float32)
+
+
 @dataclass(frozen=True)
 class Snapshot:
     """One consistent view of the index. Never mutated after construction."""
@@ -80,6 +117,14 @@ class Snapshot:
     built_at: float
     generation: int
     version: str
+    # The accurate path, present only when this installation opted into a model
+    # AND enough of the catalogue has been embedded. `embeddings` is whitened
+    # and row-aligned with `packed`; `embedded` marks which rows really have
+    # one, because a row that does not must compete on its hash alone rather
+    # than on a zero vector that would rank it against everything.
+    embeddings: np.ndarray | None = None
+    embedded: np.ndarray | None = None
+    whitening: Whitening | None = None
     # Whether this snapshot is complete enough to answer with, by the same rule
     # `coverage()` reports to /status. Carried on the snapshot so the scan
     # endpoint can check it without a second aggregate query per request.
@@ -215,6 +260,7 @@ def _load(db: Session) -> Snapshot:
         db.query(
             Card.id, Card.tcg_card_id, Card.name, Card.number, Card.set_id,
             Card.lang, Card.rarity, Card.images_small, Card.image_phash,
+            Card.image_embedding,
         )
         .filter(Card.image_phash.isnot(None))
         .filter(indexable)
@@ -238,8 +284,13 @@ def _load(db: Session) -> Snapshot:
     else:
         packed = np.empty((0, HASH_BYTES), dtype=np.uint8)
 
+    embeddings, embedded, whitening = _build_embeddings(usable)
+
     snapshot = Snapshot(
         packed=packed,
+        embeddings=embeddings,
+        embedded=embedded,
+        whitening=whitening,
         rows=tuple(
             {
                 "id": r.id,
@@ -259,10 +310,85 @@ def _load(db: Session) -> Snapshot:
         ready=_is_ready(with_hash, with_image),
     )
     logger.info(
-        "fingerprint index: loaded %d cards of %d with artwork (ready=%s)",
+        "fingerprint index: loaded %d cards of %d with artwork (ready=%s, "
+        "embedded=%s)",
         len(usable), with_image, snapshot.ready,
+        int(embedded.sum()) if embedded is not None else "off",
     )
     return snapshot
+
+
+def _fit_whitening(vectors: np.ndarray) -> Whitening:
+    """PCA whitening fitted to the embedded rows, unsupervised.
+
+    Decorrelating the axes and equalising their variance is worth +0.58 points
+    of shortlist recall on its own, and projecting to WHITENING_DIMS cuts the
+    resident index by a third at the same time.
+    """
+    mean = vectors.mean(axis=0)
+    centred = vectors - mean
+    covariance = (centred.T @ centred) / max(len(vectors) - 1, 1)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    order = np.argsort(-eigenvalues)[:min(WHITENING_DIMS, vectors.shape[1])]
+    projection = eigenvectors[:, order] / np.sqrt(
+        eigenvalues[order] + _WHITENING_EPSILON
+    )
+    return Whitening(
+        mean=mean.astype(np.float32), projection=projection.astype(np.float32)
+    )
+
+
+def _build_embeddings(usable):
+    """The whitened embedding index for `usable`, or (None, None, None).
+
+    Returns nothing at all unless this installation has a model configured and
+    enough rows carry a vector of one consistent length: a half-populated
+    embedding index would rank the embedded rows against each other and bury
+    every row the backfill has not reached yet, which is worse than not using
+    embeddings at all.
+    """
+    if not usable or not card_embedding.available():
+        return None, None, None
+
+    vectors: list[np.ndarray | None] = []
+    dims: int | None = None
+    mismatched = 0
+    for row in usable:
+        vector = card_embedding.unpack(row.image_embedding, dims)
+        if vector is not None and dims is None:
+            dims = len(vector)
+        elif vector is None and row.image_embedding:
+            mismatched += 1
+        vectors.append(vector)
+    if mismatched:
+        logger.warning(
+            "fingerprint index: skipped %d embeddings of a different length "
+            "(a changed model re-queues them; see card_embedding.source_marker)",
+            mismatched,
+        )
+    if dims is None:
+        return None, None, None
+
+    embedded = np.array([v is not None for v in vectors], dtype=bool)
+    present = int(embedded.sum())
+    if present < MIN_EMBEDDED_CARDS:
+        logger.info(
+            "fingerprint index: %d embedded cards is below the %d needed to "
+            "fit whitening; using the perceptual hash alone",
+            present, MIN_EMBEDDED_CARDS,
+        )
+        return None, None, None
+
+    raw = np.zeros((len(vectors), dims), dtype=np.float32)
+    for position, vector in enumerate(vectors):
+        if vector is not None:
+            raw[position] = vector
+    whitening = _fit_whitening(raw[embedded])
+    # Whitened in place of the raw matrix rather than alongside it: at 42k rows
+    # the raw 768-d copy is 130MB and is not needed again once fitted.
+    whitened = whitening.apply(raw)
+    whitened[~embedded] = 0.0
+    return whitened, embedded, whitening
 
 
 def _is_stale(snapshot: Snapshot | None, db: Session) -> bool:
@@ -328,10 +454,26 @@ def coverage(db: Session) -> dict:
     """How much of the catalogue can currently be recognised offline.
 
     `cards_fingerprinted` counts indexable cards that have BOTH artwork and a
-    hash, which is the numerator the `coverage` fraction needs. A row holding a
-    hash but no artwork URL is a data anomaly rather than usable coverage; it
-    would still be matchable, so this slightly understates the index size in
-    exchange for a fraction that cannot exceed 1.0.
+    hash, which is the numerator both fractions need. A row holding a hash but
+    no artwork URL is a data anomaly rather than usable coverage; it would
+    still be matchable, so this slightly understates the index size in exchange
+    for fractions that cannot exceed 1.0.
+
+    TWO fractions, because they answer different questions and only one of them
+    is what a user means by "how much of my catalogue can this recognise":
+
+    * `coverage` is over cards that HAVE artwork. It is the backfill's progress
+      bar -- how much work is left to do -- and it reaches 1.0 while a fifth of
+      the catalogue is still unmatchable.
+    * `catalogue_coverage` is over every indexable card. On the reference
+      catalogue these read 97.2% and 75.8%: 12,893 of 58,630 cards have a name
+      and a number and no artwork at all, so no image method can ever match
+      them and TCGdex mostly does not have the pictures. Showing the first one
+      under a label like "catalogue fingerprinted" overstates what the scanner
+      can do by twenty-one points.
+
+    Readiness stays on `coverage`: it asks whether the backfill has done enough
+    of the work available to it, which is not a question about catalogue gaps.
     """
     indexable = indexable_card_filter(db)
     total, with_image, with_hash = (
@@ -353,10 +495,12 @@ def coverage(db: Session) -> dict:
     with_image = int(with_image or 0)
     with_hash = int(with_hash or 0)
     fraction = (with_hash / with_image) if with_image else 0.0
+    catalogue_fraction = (with_hash / total) if total else 0.0
     return {
         "cards_total": total,
         "cards_with_image": with_image,
         "cards_fingerprinted": with_hash,
         "coverage": round(fraction, 4),
+        "catalogue_coverage": round(catalogue_fraction, 4),
         "ready": _is_ready(with_hash, with_image),
     }

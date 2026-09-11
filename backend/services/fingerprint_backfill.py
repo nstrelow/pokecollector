@@ -38,11 +38,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import httpx
-from sqlalchemy import func, or_
+from sqlalchemy import func, literal, or_
 from sqlalchemy.orm import Session
 
 from models import Card
-from services import fingerprint_index
+from services import card_embedding, fingerprint_index
 from services.card_fingerprint import fingerprint_reference
 from services.card_visibility import indexable_card_filter
 
@@ -169,6 +169,29 @@ def download_image(
     return Download(None)
 
 
+def stale_embedding_filter():
+    """Rows whose stored embedding is not one of their current artwork.
+
+    The same self-detecting guard `stale_fingerprint_filter` gives the hash,
+    with the one addition an embedding genuinely needs: the marker covers the
+    MODEL as well as the URL. A hash has had one definition forever, so "same
+    URL" is enough for it; an embedding's definition is a model file, and
+    swapping the model produces vectors that are meaningless against the
+    stored ones while looking perfectly valid. Because the marker is the model
+    tag and the URL concatenated rather than a digest of them, this stays one
+    SQL expression -- see `card_embedding.source_marker`.
+
+    Returns None when no model is configured, which is the common case and
+    means "nothing here is pending for embedding reasons".
+    """
+    if not card_embedding.model_path():
+        return None
+    expected = literal(card_embedding.model_tag() + card_embedding.MARKER_SEPARATOR)
+    return Card.image_embedding_source.is_distinct_from(
+        expected.concat(Card.images_small)
+    )
+
+
 def stale_fingerprint_filter():
     """Rows whose stored hash is not a hash of their current artwork.
 
@@ -234,7 +257,15 @@ def pending_cards(
         .filter(indexable_card_filter(db))
     )
     if not refresh:
-        query = query.filter(stale_fingerprint_filter())
+        # A row is pending if EITHER derived value is stale. They share one
+        # download, so selecting them separately would fetch the same picture
+        # twice on an install that has both -- and the point of the embedding
+        # riding along with the hash is that it costs TCGdex nothing extra.
+        stale_embedding = stale_embedding_filter()
+        pending = stale_fingerprint_filter()
+        if stale_embedding is not None:
+            pending = or_(pending, stale_embedding)
+        query = query.filter(pending)
     if langs:
         query = query.filter(Card.lang.in_(langs))
     # Postgres row order is not stable, so an order is always specified: either
@@ -260,21 +291,22 @@ def _store(db: Session, updates: list[tuple[str, dict]]) -> None:
     """
     if not updates:
         return
-    per_card: list[dict] = []
-    provenance_only: list[dict] = []
+    # Grouped by the SET OF COLUMNS each row writes, which is the only thing
+    # bulk_update_mappings can batch on. Every card carries its own URL, so
+    # grouping by value would mean grouping by URL -- one statement per
+    # distinct URL, close to one per row.
+    #
+    # Written generically rather than as the two shapes this module used to
+    # produce. It now produces four (with and without an embedding, each with
+    # and without a hash), and a hardcoded split silently degrades into
+    # one statement per row the moment a fifth appears.
+    by_columns: dict[frozenset, list[dict]] = {}
     for card_id, values in updates:
-        if "image_phash" in values:
-            per_card.append({"id": card_id, **values})
-        else:
-            # Every card carries its own URL, so grouping by value used to
-            # mean grouping by URL -- one statement per distinct URL, close to
-            # one per row. bulk_update_mappings still sends this whole list as
-            # one executemany because it groups by column set, not by value.
-            provenance_only.append({"id": card_id, **values})
-    if per_card:
-        db.bulk_update_mappings(Card, per_card)
-    if provenance_only:
-        db.bulk_update_mappings(Card, provenance_only)
+        by_columns.setdefault(frozenset(values), []).append(
+            {"id": card_id, **values}
+        )
+    for batch in by_columns.values():
+        db.bulk_update_mappings(Card, batch)
     db.commit()
 
 
@@ -369,6 +401,23 @@ def fingerprint_cards(
     cards_by_digest: dict[str, list[str]] = defaultdict(list)
     url_of = {row.id: row.images_small for row in rows}
 
+    # Resolved once per run, not per card: `available()` loads the ONNX session
+    # on first call, and asking 2,000 times from four threads would serialise
+    # them all on its lock for nothing.
+    embedding_enabled = card_embedding.available()
+
+    def embed(content: bytes) -> bytes | None:
+        """The row's dense vector, or None if this install has no model.
+
+        A failure here is deliberately not a failure of the card. The hash is
+        what the scanner needs to work at all and it has already succeeded by
+        this point; losing the embedding costs accuracy on one row, and
+        `stale_embedding_filter` will pick it up again next run.
+        """
+        if not embedding_enabled:
+            return None
+        return card_embedding.embed_reference(content)
+
     def flush() -> None:
         nonlocal stored, pending, last_flush
         keep: list[tuple[str, dict]] = []
@@ -422,7 +471,10 @@ def fingerprint_cards(
                 budget.record(failure=True)
                 return "undecodable", row.id, None, content_digest
             budget.record(failure=False)
-            return "ok", row.id, digest, content_digest
+            # Same bytes, second derived value. Costs CPU on this worker thread
+            # and not one extra request; an install with no model configured
+            # gets None here and never imports onnxruntime.
+            return "ok", row.id, (digest, embed(result.content)), content_digest
 
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             # pool.map yields into this thread only, so everything below is
@@ -459,11 +511,18 @@ def fingerprint_cards(
                         pending.append((card_id, {"image_phash_source": url}, None))
                         skipped += 1
                     else:
+                        digest, embedding = digest
                         digest_urls[content_digest].add(url)
                         cards_by_digest[content_digest].append(card_id)
+                        values = {"image_phash": digest, "image_phash_source": url}
+                        if embedding is not None:
+                            values["image_embedding"] = embedding
+                            values["image_embedding_source"] = (
+                                card_embedding.source_marker(url)
+                            )
                         pending.append(
                             (card_id,
-                             {"image_phash": digest, "image_phash_source": url},
+                             values,
                              content_digest)
                         )
                     if (
@@ -505,7 +564,17 @@ def fingerprint_cards(
         affected = [cid for d in poisoned for cid in cards_by_digest[d]]
         already_written = {cid for d in poisoned for cid in stored_by_digest[d]}
         _store(db, [
-            (cid, {"image_phash": None, "image_phash_source": url_of.get(cid)})
+            (cid, {
+                "image_phash": None,
+                "image_phash_source": url_of.get(cid),
+                # The embedding came from the same placeholder bytes, so it is
+                # exactly as wrong as the hash and has to go with it.
+                "image_embedding": None,
+                "image_embedding_source": (
+                    card_embedding.source_marker(url_of.get(cid) or "")
+                    if embedding_enabled else None
+                ),
+            })
             for cid in affected
         ])
         undone = len(already_written)
