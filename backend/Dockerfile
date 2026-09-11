@@ -15,8 +15,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends postgresql-client-18 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Opt-in extra for the offline scanner's dense-embedding path. Empty by
+# default, so the image is byte-for-byte what it always was; docker-compose
+# sets it from LOCAL_SCANNER_MODEL, so pointing at a model is what installs
+# the runtime that reads it. See backend/services/card_embedding.py.
+ARG INSTALL_SCANNER_MODEL=
+
+COPY backend/requirements.txt backend/requirements-scanner.txt ./
+RUN pip install --no-cache-dir -r requirements.txt \
+    && if [ -n "$INSTALL_SCANNER_MODEL" ]; then \
+         pip install --no-cache-dir -r requirements-scanner.txt; \
+       fi
 
 COPY VERSION /app/VERSION
 COPY backend/ .
