@@ -7,7 +7,7 @@ import toast from 'react-hot-toast'
 import { enqueueScanJob, getScannerConfiguration } from '../api/client'
 import { useSettings } from '../contexts/SettingsContext'
 import { isUploadTimeout } from '../utils/scannerTimeout'
-import { isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
+import { downscaleAllForUpload, isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
 import ConfirmDialog from './ui/ConfirmDialog'
 import Modal from './ui/Modal'
 
@@ -156,8 +156,10 @@ export default function UnifiedCardScanner({ isOpen, onClose }) {
       const individualPositions = stagedFiles
         .map((item, position) => item.individual ? position : null)
         .filter(position => position !== null)
+      // Shrunk here rather than at staging, so photos the user removes again
+      // never cost the work.
       const job = await enqueueScanJob(
-        stagedFiles.map(item => item.file),
+        await downscaleAllForUpload(stagedFiles.map(item => item.file)),
         individualPositions,
       )
       clearFiles()

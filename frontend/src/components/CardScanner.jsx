@@ -16,7 +16,7 @@ import { parseMoneyInputValue } from '../utils/moneyInput'
 import { CardDisplay } from './card-system'
 import { CandidateConfidenceBadge, CandidatePrintingPicker } from './ScanReview'
 import { tcgdexLanguageLabel } from '../utils/tcgdexLanguages'
-import { isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
+import { downscaleAllForUpload, downscaleForUpload, isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
 import { hasCatalogueImage } from '../utils/imageUrl'
 import { useDialogBehavior } from './ui/dialogBehavior'
 
@@ -262,6 +262,9 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
     setScanPreviewUrl(scanPreviewRef.current)
     scannedFileRef.current = file
     setPhase('loading')
+    // Shrink to the bound the backend applies anyway. Best effort: on any
+    // failure this is the original file, which is what used to be sent.
+    file = await downscaleForUpload(file)
     try {
       const data = localScanner
         ? await recognizeCardLocally(file)
@@ -343,7 +346,10 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
     if (!stagedFiles.length || submittingBatch) return
     setSubmittingBatch(true)
     try {
-      const job = await enqueueScanJob(stagedFiles.map(item => item.file))
+      // Shrunk here rather than at staging, so photos the user removes again
+      // never cost the work.
+      const job = await enqueueScanJob(
+        await downscaleAllForUpload(stagedFiles.map(item => item.file)))
       releaseStagedFiles()
       setStagedFiles([])
       setPhase('capture')
