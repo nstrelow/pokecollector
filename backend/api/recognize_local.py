@@ -1,9 +1,12 @@
 """Offline card recognition, with no vision provider involved.
 
 `api/recognize.py` cannot run without a configured LLM: it calls the provider
-before anything else, and raises 400 when no credential is present. It also
-fails outright (422) when the model cannot read a card name, because the name is
-what its TCGdex search is keyed on.
+before anything else, raises 400 when no credential is present, and fails
+outright (422) when the model cannot read a card name, because the name is what
+its candidate search is keyed on. That search reads the local catalogue now
+rather than the live TCGdex API, so the provider path no longer needs the
+network to rank -- but it still needs the credential, the model, and a legible
+name before it gets that far.
 
 This endpoint takes the other route. It matches the photo's fingerprint against
 the locally stored catalogue, needing no credential, no network, and no name.

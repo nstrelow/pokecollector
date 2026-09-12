@@ -150,6 +150,21 @@ class LocalScannerQueueRoutingTests(unittest.TestCase):
         self.db.close()
         self.engine.dispose()
 
+    def _give_provider_a_credential(self):
+        """Only for the test that exercises the PROVIDER path.
+
+        Upstream moved the credential check inside `default_scan_processor`, so
+        the provider path now 400s without one before it reaches anything worth
+        asserting. Deliberately not in setUp: every other test here turns the
+        toggle on, and their whole claim is that the offline path answers with
+        no credential configured at all. Handing them one for free would make
+        that claim unfalsifiable.
+        """
+        self.db.add(UserSetting(
+            user_id=self.user.id, key="gemini_api_key", value="test-key",
+        ))
+        self.db.commit()
+
     def _turn_on(self):
         self.db.add(UserSetting(
             user_id=self.user.id, key=LOCAL_SCANNER_SETTING_KEY, value="true",
@@ -174,6 +189,7 @@ class LocalScannerQueueRoutingTests(unittest.TestCase):
         self.assertEqual(recognize.await_args.args[1], b"stored-photo")
 
     def test_leaving_the_toggle_off_keeps_todays_provider_path(self):
+        self._give_provider_a_credential()
         recognize = AsyncMock(return_value=_local_result("pikachu"))
         provider = AsyncMock(return_value={"recognized": {}, "matches": []})
 
