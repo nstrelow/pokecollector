@@ -168,8 +168,13 @@ def _group_by_artwork(
     return groups
 
 
-def _candidate(row: dict, distance: int, percent: int) -> dict:
-    """One shortlist tile, shaped like a /recognize match plus local-only fields."""
+def _candidate(row: dict, distance: int, percent: int | None) -> dict:
+    """One shortlist tile, shaped like a /recognize match plus local-only fields.
+
+    `percent` is None when this ranking has no calibrated curve behind it; the
+    review UI already renders no badge for a candidate without one, which is
+    what the provider scanner's candidates have always looked like.
+    """
     return {
         "id": row["id"],
         "tcg_card_id": row["tcg_card_id"],
@@ -182,7 +187,9 @@ def _candidate(row: dict, distance: int, percent: int) -> dict:
         "image": row["image"],
         # Extra, local-only fields. The review UI ignores what it does not know.
         "_distance": distance,
-        "_confidence": _confidence(distance),
+        # Also a distance rule, so it goes quiet for the same reason the
+        # percentage does: it would paint a correctly-found card "low".
+        "_confidence": _confidence(distance) if percent is not None else None,
         # Measured, not derived from the distance arithmetically -- see
         # card_fingerprint.match_probability.
         "_match_percent": percent,
@@ -313,7 +320,20 @@ async def recognize_local_photo(
         # picture, so "this is the right artwork" is true of all of them or none
         # -- unlike two different cards at the same distance, which is what
         # `leaders` divides the odds between.
-        percent = match_probability(group[0][1], leaders=leaders)
+        #
+        # None on the fused path, and the UI then renders no badge at all.
+        # `match_probability` reads a table indexed by Hamming distance, and on
+        # the fused path the tile was chosen by the embedding, so its distance
+        # is whatever the hash happened to think -- frequently 18 to 22, deep in
+        # the tail. Live, that printed "1%" beside cards the scanner had found
+        # correctly at tile 1. That is the original defect inverted: a measured
+        # curve applied to a population it was not measured on, understating
+        # this time instead of overstating. A number that says 1% about a
+        # correct answer teaches the user to ignore the number.
+        percent = (
+            None if fused
+            else match_probability(group[0][1], leaders=leaders)
+        )
         printings = [_candidate(rows[i], distance, percent)
                      for i, distance in group]
         match = printings[0]

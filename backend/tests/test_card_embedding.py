@@ -424,6 +424,46 @@ class EmbeddedEndpointTests(unittest.TestCase):
                 p.start()
         self.assertTrue(body["_identity_confident"])
 
+    def test_it_prints_no_percentage_it_cannot_justify(self):
+        """A distance curve must not label a ranking that ignored distance.
+
+        Live, the embedding found seven of ten cards at tile 1 and the badge
+        said "1%" beside them, because `match_probability` reads a table indexed
+        by Hamming distance and the embedding had picked tiles whose distance was
+        18 to 22. That is the defect this branch started with, inverted:
+        understating a correct answer instead of overstating a wrong one, and
+        just as corrosive -- a number that says 1% about the right card teaches
+        the user to stop reading it.
+        """
+        target = _image(12)
+        self._add("quiet_en", target)
+        for seed in range(70, 78):
+            self._add(f"q{seed}_en", _image(seed))
+        matches = self._post(target).json()["matches"]
+        self.assertEqual(matches[0]["id"], "quiet_en")
+        for match in matches:
+            self.assertIsNone(match["_match_percent"])
+            self.assertIsNone(match["_confidence"])
+
+    def test_the_hash_path_still_prints_its_measured_percentage(self):
+        """Going quiet on one path must not silence the calibrated one."""
+        target = _image(13)
+        for p in self._patches:
+            p.stop()
+        try:
+            with patch.object(fingerprint_index, "READY_MIN_CARDS", 1):
+                self._add("loud_en", target)
+                for seed in range(80, 88):
+                    self._add(f"l{seed}_en", _image(seed))
+                fingerprint_index.reset()
+                matches = self._post(target).json()["matches"]
+        finally:
+            for p in self._patches:
+                p.start()
+        self.assertEqual(matches[0]["id"], "loud_en")
+        self.assertIsInstance(matches[0]["_match_percent"], int)
+        self.assertEqual(matches[0]["_confidence"], "high")
+
     def test_both_the_crop_and_the_whole_frame_are_scored(self):
         """Worth +2.71 points of rank-1, and it rescues the badly framed ones."""
         target = _image(10)
