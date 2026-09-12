@@ -265,9 +265,19 @@ def _match_photo(
         np.minimum(hamming, distances(query, snapshot.packed), out=hamming)
 
     scores = fuse_similarity(similarity, hamming, snapshot.embedded)
-    ranked = rank_fused(
-        scores, hamming, limit=limit, max_distance=SHORTLIST_MAX_DISTANCE
-    )
+    # No distance cutoff on this ranking, deliberately. SHORTLIST_MAX_DISTANCE
+    # is 24 BITS, derived from where the correct row sat in a Hamming-ordered
+    # shortlist -- and this shortlist is not Hamming-ordered. Applying it here
+    # dropped cards the embedding had matched correctly purely because their
+    # 64-bit hash was far away, which is the hash overruling the ranker that
+    # replaced it. Measured cost of keeping it: 99.93% -> 99.90% shortlist
+    # recall, small today and unbounded as the embedding outgrows the hash.
+    #
+    # Nothing is lost by removing it. The cutoff never separated a photo of
+    # nothing from a hard match anyway -- pure noise lands 12 to 20 bits out,
+    # exactly where genuine matches live -- and what the user now gets instead
+    # is a calibrated percentage that says how thin the evidence is.
+    ranked = rank_fused(scores, hamming, limit=limit)
     # The scores come back with the ranking, because the badge is calibrated on
     # the margin between tiles and there is nowhere else to recover it from.
     return ranked, {row: float(scores[row]) for row, _ in ranked}

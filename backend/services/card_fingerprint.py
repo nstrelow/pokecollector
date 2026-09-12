@@ -40,7 +40,7 @@ byte-different renders of the same art and therefore genuinely indistinguishable
 to a perceptual hash. The shortlist exists so the user picks the printing.
 
 Cropping is what makes any of it work. With the whole photograph hashed and no
-`crop_to_card`, artwork-in-top-12 falls from 91.62% to 33.6%: hashing a whole
+cropping at all, artwork-in-top-12 falls from 91.62% to 33.6%: hashing a whole
 photograph fails as soon as the card does not fill the frame.
 
 But *whether* to crop cannot be decided by a threshold on how much of the frame
@@ -365,24 +365,6 @@ _ENERGY_FLOOR_PERCENTILE = 72.0
 _ENERGY_TAIL = 0.02
 _MIN_AREA_FRACTION = 0.06
 _MIN_ASPECT, _MAX_ASPECT = 0.35, 1.35
-# Above this fraction of the frame there is no background worth removing, and
-# cropping further would only desynchronise the photo from the catalogue render.
-#
-# Raising this was tried and is wrong, by a lot. Swept over the 7,098-photo
-# multilingual set (artwork in the 12-item shortlist):
-#
-#   _ALREADY_TIGHT   0.60    0.66    0.72    0.78    0.84    0.90    0.96
-#   artwork in 12  92.36%  92.25%  91.62%  87.01%  80.09%  79.28%  79.28%
-#   confident       16.0%   16.0%   15.6%   13.1%    8.7%    6.9%    6.7%
-#   precision      99.03%  99.03%  99.01%  98.71%  96.94%  95.88%  95.55%
-#
-# Cropping more is not "more careful framing"; past ~0.72 the energy box starts
-# trimming into the card itself, and a 4% over-trim is enough to move a true
-# match from rank 1 to rank 42. Lower is mildly better on this data, but this
-# constant no longer decides what the scanner searches -- `photo_hash_variants`
-# returns both sides regardless -- so it is left where it was benchmarked rather
-# than retuned for a path nothing takes.
-_ALREADY_TIGHT = 0.72
 
 
 @lru_cache(maxsize=1)
@@ -486,17 +468,6 @@ def find_card_box(img: Image.Image) -> tuple[int, int, int, int] | None:
     return box
 
 
-def crop_to_card(img: Image.Image) -> Image.Image:
-    """Crop a photo to the card, or leave it alone if it is already card-only."""
-    box = find_card_box(img)
-    if box is None:
-        return img
-    w, h = img.size
-    area = (box[2] - box[0]) * (box[3] - box[1]) / float(w * h)
-    if area >= _ALREADY_TIGHT:
-        return img
-    return img.crop(box)
-
 
 # --- fingerprints ---------------------------------------------------------
 
@@ -507,7 +478,7 @@ def _hash_bits(img: Image.Image) -> np.ndarray:
     tiebreak and the persisted `cards.image_phash` can never drift apart.
 
     Callers normally hand us an image that `_open` has already normalised to
-    RGB, and for `fingerprint_reference`/`fingerprint_photo` that normalisation
+    RGB, and for `fingerprint_reference` that normalisation
     is part of the definition -- not because it changes the luma, but because
     every fingerprint already in every install's database was computed after
     it, and `convert("RGB")` also gives back a fully materialised image that no
@@ -543,7 +514,7 @@ def _safe_hash_bits(img: Image.Image) -> np.ndarray | None:
     Decoding is not the only step that can fail on a hostile or merely enormous
     upload: the 32x32 LANCZOS resize allocates, and MemoryError or a truncated
     -image OSError surfacing here used to escape to the caller from
-    `hash_bits`, `fingerprint_reference` and `fingerprint_photo` alike, even
+    `hash_bits` and `fingerprint_reference` alike, even
     though all three document a None return. One rule for both halves.
     """
     try:
@@ -589,9 +560,9 @@ def _open(
     roughly half a gigabyte of transient peak at MAX_REFERENCE_IMAGE_PIXELS.
 
     `mode` defaults to RGB because `fingerprint_reference` and
-    `fingerprint_photo` -- whose output is persisted to `cards.image_phash` --
-    must keep asking for exactly what every already-stored fingerprint was
-    computed from. Only `hash_bits(mode="L")` passes anything else, recovering
+    `fingerprint_reference` -- whose output is persisted to
+    `cards.image_phash` -- must keep asking for exactly what every
+    already-stored fingerprint was computed from. Only `hash_bits(mode="L")` passes anything else, recovering
     the +415MB-vs-277MB gap above for the one caller whose result is never
     persisted. See `_hash_bits` for why that does not change the hash.
     """
@@ -684,28 +655,28 @@ def photo_views(img: Image.Image) -> list[Image.Image]:
                 views.append(turned.crop(turned_box))
         return views
 
-    width, height = img.size
-    area = (box[2] - box[0]) * (box[3] - box[1]) / float(width * height)
     cropped = img.crop(box)
-    return [img, cropped] if area >= _ALREADY_TIGHT else [cropped, img]
+    # Crop first. Both are always scored and a row takes its best over them --
+    # min for Hamming, max for cosine -- so this order decides nothing, and a
+    # threshold that used to choose between them decided nothing either once
+    # both started being searched. It is an ordering, not a policy.
+    return [cropped, img]
 
 
 def photo_hash_variants(image_bytes: bytes) -> list[bytes]:
     """Every fingerprint of one photograph worth searching, best guess first.
 
     Cropping to the detected card is what makes this work at all -- uncropped,
-    shortlist recall collapses from 91.6% to 33.6%. But `crop_to_card` has to
-    decide whether a photo still has background worth removing, and that
-    decision is a threshold on a continuum. A photo landing near it is not a
-    close call the threshold gets slightly wrong; it is the difference between
-    rank 1 and rank 48, because a 64-bit hash of a card plus a fifth of a frame
-    of fingers and tablecloth is not a noisy version of the card's hash, it is
-    a different hash.
+    shortlist recall collapses from 91.6% to 33.6%. But whether a photo still
+    has background worth removing is a threshold on a continuum, and a photo
+    landing near it is not a close call the threshold gets slightly wrong: it is
+    the difference between rank 1 and rank 48, because a 64-bit hash of a card
+    plus a fifth of a frame of fingers and tablecloth is not a noisy version of
+    the card's hash, it is a different hash.
 
-    So both sides are returned and both are searched, whichever side of
-    `_ALREADY_TIGHT` the photo falls on. Order is `crop_to_card`'s answer first
-    and is what `fingerprint_photo` reads; `search_variants` scores a row by its
-    best distance over the list, so for the shortlist the order is immaterial.
+    So the threshold was removed and both sides are returned. `search_variants`
+    scores a row by its best distance over the list, so the order is
+    immaterial.
     """
     img = _open(image_bytes)
     if img is None:
@@ -723,15 +694,6 @@ def photo_hash_variants(image_bytes: bytes) -> list[bytes]:
             hashes.append(packed)
     return hashes
 
-
-def fingerprint_photo(image_bytes: bytes) -> bytes | None:
-    """The single leading fingerprint of a user photograph.
-
-    Defined in terms of `photo_hash_variants` so the two cannot disagree about
-    which crop leads.
-    """
-    variants = photo_hash_variants(image_bytes)
-    return variants[0] if variants else None
 
 
 # --- search ---------------------------------------------------------------
@@ -751,23 +713,6 @@ def distances(query: bytes, index: np.ndarray) -> np.ndarray:
     """Hamming distance from one fingerprint to every row of a packed index."""
     q = np.frombuffer(query, dtype=np.uint8)
     return _POPCOUNT[np.bitwise_xor(index, q)].sum(axis=1)
-
-
-def search(
-    query: bytes,
-    index: np.ndarray,
-    limit: int = 12,
-    max_distance: int | None = None,
-) -> list[tuple[int, int]]:
-    """Return [(row, distance)] for the `limit` closest catalogue entries.
-
-    Entries further than `max_distance` are dropped, so a photo of something
-    that is not in the catalogue can legitimately return nothing instead of a
-    dozen confident-looking strangers.
-    """
-    if index.size == 0:
-        return []
-    return _rank(distances(query, index), limit, max_distance)
 
 
 def _rank(

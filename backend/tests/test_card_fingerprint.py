@@ -17,14 +17,12 @@ from services.card_fingerprint import (  # noqa: E402
     MAX_DISTANCE,
     SHORTLIST_MAX_DISTANCE,
     _work_size,
-    crop_to_card,
     find_card_box,
-    fingerprint_photo,
     fingerprint_reference,
     hash_bits,
     photo_hash_variants,
+    search_variants,
     is_confident,
-    search,
 )
 
 
@@ -288,7 +286,7 @@ class FingerprintTests(unittest.TestCase):
 
         with patch.object(card_fingerprint, "_hash_bits", boom):
             self.assertIsNone(fingerprint_reference(raw))
-            self.assertIsNone(fingerprint_photo(raw))
+            self.assertEqual(photo_hash_variants(raw), [])
             self.assertIsNone(hash_bits(raw))
 
     def test_the_scanner_tiebreak_uses_the_same_hash_definition(self):
@@ -330,7 +328,7 @@ class FingerprintTests(unittest.TestCase):
             card.save(crushed, "JPEG", quality=45)
             for variant in (_to_bytes(doubled), crushed.getvalue()):
                 digest = fingerprint_reference(variant)
-                ranked = search(digest, index, limit=2)
+                ranked = search_variants([digest], index, limit=2)
                 self.assertEqual(ranked[0][0], position)
                 same_card.append(_distance(digests[position], digest))
 
@@ -356,7 +354,7 @@ class FingerprintTests(unittest.TestCase):
 
     def test_unreadable_bytes_return_none(self):
         self.assertIsNone(fingerprint_reference(b"not an image"))
-        self.assertIsNone(fingerprint_photo(b""))
+        self.assertEqual(photo_hash_variants(b""), [])
 
 
 class CropTests(unittest.TestCase):
@@ -460,62 +458,6 @@ class CropTests(unittest.TestCase):
         for size in sizes:
             self.assertLessEqual(size[0] * size[1], 320 * 640)
 
-    def test_an_already_tight_image_is_left_alone(self):
-        card = _card(seed=5)
-        self.assertEqual(crop_to_card(card).size, card.size)
-
-    def test_the_crop_threshold_is_the_benchmarked_value(self):
-        """_ALREADY_TIGHT is tuned, not chosen. Pin it as a literal.
-
-        Raising it to 0.90 was tried, to make a hand-held photo filling 0.768
-        of the frame get cropped. It works for that photo and costs 12.34
-        points of shortlist recall over the 7,098-photo set (91.62% -> 79.28%),
-        because past ~0.72 the energy box trims into the card. It may only move
-        together with a benchmark run over data/queries_multi.
-        """
-        self.assertEqual(card_fingerprint._ALREADY_TIGHT, 0.72)
-
-    def test_the_already_tight_boundary_is_inclusive(self):
-        """A box covering exactly _ALREADY_TIGHT of the frame is left alone.
-
-        The threshold exists because cropping a photo the card already fills
-        only desynchronises it from the catalogue render. At exactly the
-        threshold there is by definition nothing worth removing, so cropping
-        there would trim ~28% of the frame for no reason. Detection cannot be
-        steered to hit the boundary exactly, so the box is supplied directly.
-        """
-        frame = Image.new("RGB", (100, 100))
-        exact = (0, 0, 90, 80)  # 7200 / 10000 == _ALREADY_TIGHT
-        self.assertAlmostEqual(
-            (exact[2] - exact[0]) * (exact[3] - exact[1]) / 10000.0,
-            card_fingerprint._ALREADY_TIGHT,
-        )
-        with patch.object(card_fingerprint, "find_card_box", lambda img: exact):
-            self.assertEqual(crop_to_card(frame).size, (100, 100))
-
-        just_under = (0, 0, 90, 79)  # 7110 / 10000, below the threshold
-        with patch.object(card_fingerprint, "find_card_box", lambda img: just_under):
-            self.assertEqual(crop_to_card(frame).size, (90, 79))
-
-    def test_cropping_makes_a_desk_photo_match_the_reference(self):
-        """The whole point of the crop: framing must not break recognition."""
-        card = _card(seed=6)
-        reference = fingerprint_reference(_to_bytes(card))
-        photo = _to_bytes(_on_desk(card), "JPEG")
-
-        cropped = fingerprint_photo(photo)
-        with Image.open(io.BytesIO(photo)) as im:
-            uncropped = fingerprint_reference(_to_bytes(im.convert("RGB")))
-
-        def distance(x, y):
-            return np.count_nonzero(
-                np.unpackbits(np.frombuffer(x, dtype=np.uint8))
-                != np.unpackbits(np.frombuffer(y, dtype=np.uint8))
-            )
-
-        self.assertLess(distance(reference, cropped), distance(reference, uncropped))
-
-
 class BlurTests(unittest.TestCase):
     def test_the_moving_average_window_is_exactly_seven_wide(self):
         """radius=3 means a 7-tap window, centred.
@@ -578,7 +520,7 @@ class SearchTests(unittest.TestCase):
     def test_search_returns_nearest_first(self):
         digests = [fingerprint_reference(_to_bytes(_card(seed=i))) for i in range(6)]
         index = self._index(digests)
-        ranked = search(digests[3], index, limit=3)
+        ranked = search_variants([digests[3]], index, limit=3)
         self.assertEqual(ranked[0][0], 3)
         self.assertEqual(ranked[0][1], 0)
         self.assertLessEqual(ranked[0][1], ranked[1][1])
@@ -587,11 +529,11 @@ class SearchTests(unittest.TestCase):
         """An empty shortlist has to be reachable, or the UI branch is dead."""
         digests = [fingerprint_reference(_to_bytes(_card(seed=i))) for i in range(6)]
         index = self._index(digests)
-        self.assertEqual(search(digests[2], index, limit=6, max_distance=0),
+        self.assertEqual(search_variants([digests[2]], index, limit=6, max_distance=0),
                          [(2, 0)])
-        self.assertEqual(search(digests[2], index, limit=6, max_distance=-1), [])
+        self.assertEqual(search_variants([digests[2]], index, limit=6, max_distance=-1), [])
         # The default cutoff keeps a genuine self-match.
-        ranked = search(digests[2], index, limit=6,
+        ranked = search_variants([digests[2]], index, limit=6,
                         max_distance=SHORTLIST_MAX_DISTANCE)
         self.assertEqual(ranked[0], (2, 0))
 
@@ -611,7 +553,7 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(_distance(query, exactly_25), 25)
 
         index = self._index([exactly_24, exactly_25])
-        ranked = search(query, index, limit=2, max_distance=24)
+        ranked = search_variants([query], index, limit=2, max_distance=24)
         self.assertEqual(ranked, [(0, 24)])
 
     def test_the_shortlist_is_exactly_the_twelve_nearest_in_a_fixed_order(self):
@@ -629,7 +571,7 @@ class SearchTests(unittest.TestCase):
         index = rng.integers(0, 256, (9000, HASH_BYTES), dtype=np.uint8)
         query = bytes(rng.integers(0, 256, HASH_BYTES, dtype=np.uint8))
 
-        ranked = search(query, index, limit=12)
+        ranked = search_variants([query], index, limit=12)
         every = sorted(
             (int(distance), row)
             for row, distance in enumerate(card_fingerprint.distances(query, index))
@@ -640,13 +582,14 @@ class SearchTests(unittest.TestCase):
         target = bytes([0] * HASH_BYTES)
         far = bytes([0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0])
         index = self._index([far] + [target] * 50 + [far] * 4000)
-        ranked = search(target, index, limit=3)
+        ranked = search_variants([target], index, limit=3)
         self.assertEqual([row for row, _ in ranked], [1, 2, 3])
         self.assertEqual([distance for _, distance in ranked], [0, 0, 0])
 
     def test_search_on_empty_index_is_safe(self):
         empty = np.empty((0, HASH_BYTES), dtype=np.uint8)
-        self.assertEqual(search(fingerprint_reference(_to_bytes(_card())), empty), [])
+        self.assertEqual(
+            search_variants([fingerprint_reference(_to_bytes(_card()))], empty), [])
 
     def test_the_composite_ranking_key_survives_a_catalogue_sized_index(self):
         """The distance is shifted 32 bits, not 16, and the catalogue is 58,634.
@@ -665,7 +608,7 @@ class SearchTests(unittest.TestCase):
         index[0][0] = 0b1           # ...except row 0, which is 1 bit away
         index[rows - 1][0] = 0      # ...and the last row, an exact match
 
-        ranked = search(query, index, limit=3)
+        ranked = search_variants([query], index, limit=3)
         self.assertEqual(
             ranked[0], (rows - 1, 0),
             "the exact match past row 65,535 must still rank first",
@@ -678,7 +621,7 @@ class SearchTests(unittest.TestCase):
         for row in (3, 65535, 65536, rows - 1):
             tied[row][0] = 0
         self.assertEqual(
-            [row for row, _ in search(query, tied, limit=4)],
+            [row for row, _ in search_variants([query], tied, limit=4)],
             [3, 65535, 65536, rows - 1],
         )
 
@@ -742,29 +685,10 @@ class PhotoVariantTests(unittest.TestCase):
         self.assertEqual(len(variants), 2)
         self.assertEqual(len(set(variants)), 2)
 
-    def test_the_leading_variant_is_what_fingerprint_photo_returns(self):
-        """The two entry points must not disagree about which crop leads."""
-        for seed, wrap in ((12, _on_desk), (13, lambda c: c)):
-            with self.subTest(seed=seed):
-                photo = _to_bytes(wrap(_card(seed=seed)), "JPEG")
-                variants = card_fingerprint.photo_hash_variants(photo)
-                self.assertEqual(fingerprint_photo(photo), variants[0])
-
-    def test_a_photo_needing_a_crop_leads_with_the_crop(self):
-        photo = _to_bytes(_on_desk(_card(seed=14)), "JPEG")
-        with Image.open(io.BytesIO(photo)) as im:
-            frame = im.convert("RGB")
-            box = find_card_box(frame)
-            self.assertIsNotNone(box)
-            cropped = card_fingerprint._pack_bits(
-                card_fingerprint._hash_bits(frame.crop(box))
-            )
-        self.assertEqual(card_fingerprint.photo_hash_variants(photo)[0], cropped)
-
     def test_an_unreadable_photo_yields_no_variants(self):
         self.assertEqual(card_fingerprint.photo_hash_variants(b""), [])
         self.assertEqual(card_fingerprint.photo_hash_variants(b"not an image"), [])
-        self.assertIsNone(fingerprint_photo(b""))
+        self.assertEqual(photo_hash_variants(b""), [])
 
     def test_detection_failure_is_swallowed_as_it_was_before(self):
         photo = _to_bytes(_card(seed=15), "JPEG")
@@ -772,7 +696,7 @@ class PhotoVariantTests(unittest.TestCase):
             card_fingerprint, "find_card_box", side_effect=RuntimeError("boom")
         ):
             self.assertEqual(card_fingerprint.photo_hash_variants(photo), [])
-            self.assertIsNone(fingerprint_photo(photo))
+            self.assertEqual(photo_hash_variants(photo), [])
 
 
 class MatchLeaderCountTests(unittest.TestCase):
@@ -1103,7 +1027,7 @@ class SearchVariantsTests(unittest.TestCase):
         query = bytes([0b00000011] * 8)
         self.assertEqual(
             card_fingerprint.search_variants([query], index, limit=2),
-            search(query, index, limit=2),
+            search_variants([query], index, limit=2),
         )
 
     def test_the_distance_cutoff_still_applies_to_the_merged_ranking(self):

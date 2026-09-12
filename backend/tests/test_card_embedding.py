@@ -470,13 +470,28 @@ class EmbeddedEndpointTests(unittest.TestCase):
         self.assertLessEqual(sum(shown), 100)
 
     def test_a_lone_tile_carries_no_margin_and_so_no_number(self):
-        """One tile is not a comparison, and the badge is calibrated on one."""
+        """One tile is not a comparison, and the badge is calibrated on one.
+
+        Reached by giving the index a single ARTWORK in several printings, which
+        group into one tile. It used to be reachable by the Hamming cutoff
+        dropping everything else, but that cutoff is gone -- a bit count had no
+        business filtering a ranking the embedding produced.
+        """
+        from models import Setting
+        # The fixture syncs English only, and indexable_card_filter honours
+        # that -- other printings would be filtered out of the index entirely
+        # rather than grouped onto the tile.
+        self.db.query(Setting).filter(Setting.key == "tcgdex_sync_languages").update(
+            {"value": "en,de,fr,it,es"}
+        )
+        self.db.commit()
         target = _image(15)
-        self._add("only_en", target)
-        for seed in range(140, 148):
-            self._add(f"o{seed}_en", _image(seed))
+        for lang in ("de", "en", "fr", "it", "es"):
+            self._add(f"solo_{lang}", target)
+        fingerprint_index.reset()
         matches = self._post(target).json()["matches"]
-        self.assertEqual(len(matches), 1, "the cutoff should leave one tile here")
+        self.assertEqual(len(matches), 1, "one artwork is one tile")
+        self.assertEqual(len(matches[0]["_other_printings"]), 4)
         self.assertIsNone(matches[0]["_match_percent"])
 
     def test_the_hash_path_still_prints_its_measured_percentage(self):
