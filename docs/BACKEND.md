@@ -309,6 +309,43 @@ Environment controls:
 6. Individual scans may use the same provider's visual comparison when pHash abstains; composite scans fall back to individual recognition instead.
 7. Queue results remain reviewable after restarts. Confirming and adding a candidate uses one row-locked database transaction so concurrent tabs cannot increment the collection twice; confirming/dismissing then deletes the queued photo. Unreviewed jobs expire after 14 days.
 
+### Offline recognition ("Scanner v2 (Beta)")
+
+`backend/api/recognize_local.py` is the other route: it matches a photo against
+locally stored artwork and never contacts a provider. It is per-user, off by
+default (`local_scanner_enabled`), and when on, `services/scan_queue.py` routes
+that user's scans to it before any provider work happens — no credential, no
+capability probe, no recognition cache.
+
+Two rankers, and which one ran is reported as `_ranked_by` on every answer:
+
+- **Perceptual hash** (`services/card_fingerprint.py`) — a 64-bit DCT hash of
+  the artwork in `cards.image_phash`, kept current by an hourly backfill.
+  Always available; no dependency beyond numpy and Pillow.
+- **Dense embedding** (`services/card_embedding.py`) — optional, enabled only
+  by setting `LOCAL_SCANNER_MODEL` to a DINOv2 ONNX export, which also installs
+  onnxruntime at build time. Stored in `cards.image_embedding`, whitened to 256
+  dimensions at index load, and fused with the hash by a per-query z-score sum.
+  The hash is kept because two language printings of one card are the same
+  picture to the embedding and different renders to the hash.
+
+A row without an embedding is ranked on its hash alone, so the two coexist
+while a backfill catches up. If the model is configured but a photo produces no
+views, the scan degrades to hash-only and says so in the log and in
+`_ranked_by`, because the two rankings are far apart in accuracy.
+
+The shortlist holds twelve distinct **artworks**, not twelve rows: other
+language printings of one card are grouped onto its tile in `_other_printings`
+rather than spending a slot each. Confidence is judged on the ungrouped
+ranking, so collapsing a German and an English printing cannot manufacture a
+margin the hash never had.
+
+Known limits, all measured and documented in the benchmark notes: the scanner
+cannot separate two language printings by artwork alone; roughly a fifth of the
+catalogue has no artwork and can never be matched; and a photo of such a card
+is still answered confidently rather than refused, because no score in the
+system distinguishes "absent" from "hard".
+
 Provider error handling:
 
 - Gemini and OpenAI-compatible providers share the queue contract while retaining provider-specific request formats
