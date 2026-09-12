@@ -291,6 +291,16 @@ LAST_SCORED_TILE = 3
 def fused_match_probability(margin: float, rank: int) -> int | None:
     """Measured chance this tile is the right artwork, for a fused ranking.
 
+    ASSUMES THE RIGHT CARD IS IN THE CATALOGUE. Every query in the benchmark
+    this was measured on has its answer present, so the number says nothing
+    about a photo of a card the catalogue does not hold -- and roughly a fifth
+    of the catalogue has no artwork at all. Measured: masking the true card out
+    of the index barely moves the margin (AUC 0.606), so a clean photo of an
+    absent card still reports 99%. Absolute similarity separates the two cases
+    on synthetic data (AUC 0.776) and NOT on real photographs, where present
+    and absent cards both sit around 0.59. Reading the printed collector number
+    is the only thing that settles it; see PROJECT-NOTES sec.8 and sec.10.
+
     `margin` is the leading tile's fused score minus the next tile's -- one
     number describing the whole shortlist, which is why every rank reads it.
     `rank` is 1-based, and past `LAST_SCORED_TILE` the answer is None.
