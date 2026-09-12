@@ -945,6 +945,66 @@ class MatchProbabilityTests(unittest.TestCase):
         self.assertGreaterEqual(card_fingerprint.match_probability(0, leaders=1), 98)
 
 
+class FusedMatchProbabilityTests(unittest.TestCase):
+    """The badge for a ranking the embedding produced."""
+
+    def test_it_rises_with_the_margin(self):
+        values = [
+            card_fingerprint.fused_match_probability(m, 1)
+            for m in (0.0, 0.3, 0.6, 1.0, 2.0, 5.0, 50.0)
+        ]
+        self.assertEqual(values, sorted(values))
+
+    def test_a_tile_with_nothing_to_say_says_nothing(self):
+        """Two ways a tile earns silence, and both are about the measurement.
+
+        Past margin 2, tiles 2 and 3 were wrong 840 times out of 840. And tiles
+        past the third were only ever measured as one pooled bucket, under 0.9%
+        at every margin, so there is no per-tile number to print. Rounding
+        either up to a 1% floor across nine tiles is how a shortlist ends up
+        claiming 101%, which is the arithmetic this branch exists to stop.
+        """
+        self.assertIsNone(card_fingerprint.fused_match_probability(6.0, 2))
+        self.assertIsNotNone(card_fingerprint.fused_match_probability(6.0, 1))
+        for margin in (0.0, 1.0, 6.0):
+            self.assertIsNone(card_fingerprint.fused_match_probability(margin, 4))
+            self.assertIsNone(card_fingerprint.fused_match_probability(margin, 12))
+
+    def test_a_shortlist_nobody_can_separate_says_so(self):
+        """Measured: below margin 0.25 the leader is right 47% of the time.
+
+        That is the number worth printing. The tile is still shown, still first,
+        and the user is told it is close to a coin flip.
+        """
+        self.assertLess(card_fingerprint.fused_match_probability(0.1, 1), 55)
+        self.assertGreater(card_fingerprint.fused_match_probability(0.1, 2), 25)
+
+    def test_a_clear_winner_is_not_called_a_certainty(self):
+        self.assertLessEqual(card_fingerprint.fused_match_probability(99.0, 1), 99)
+
+    def test_later_tiles_never_outrank_earlier_ones(self):
+        for margin in (0.0, 0.5, 1.0, 2.0, 6.0):
+            with self.subTest(margin=margin):
+                values = [
+                    card_fingerprint.fused_match_probability(margin, r) or 0
+                    for r in range(1, 6)
+                ]
+                self.assertEqual(values, sorted(values, reverse=True))
+
+    def test_the_measured_tiles_cannot_sum_past_a_certainty(self):
+        """Only one tile can be the right artwork, at any margin."""
+        for margin in (0.0, 0.2, 0.4, 0.8, 1.2, 2.0, 3.5, 10.0):
+            with self.subTest(margin=margin):
+                total = sum(
+                    card_fingerprint.fused_match_probability(margin, r) or 0
+                    for r in range(1, 13)
+                )
+                self.assertLessEqual(
+                    total, 100,
+                    "every tile in the shortlist, not just the measured three",
+                )
+
+
 class SearchVariantsTests(unittest.TestCase):
     """Merging can only pull a row up the shortlist, never push one out."""
 

@@ -39,6 +39,7 @@ from services.card_fingerprint import (
     SHORTLIST_MAX_DISTANCE,
     distances,
     fuse_similarity,
+    fused_match_probability,
     is_confident,
     match_leader_counts,
     match_probability,
@@ -204,9 +205,10 @@ def _match_photo(
 ):
     """Sanitize, fingerprint and rank one upload. Runs off the event loop.
 
-    Returns `(ranked, fused)`, where `fused` says whether the accurate path was
-    used -- the caller needs it, because the confidence gate is only calibrated
-    for the other one.
+    Returns `(ranked, scores)`. `scores` is None when the hash did the ranking,
+    and otherwise maps each ranked row to its fused score -- the caller needs
+    both facts: the confidence gate is calibrated only for the hash, and the
+    badge is calibrated on the margin between fused scores.
 
     `sanitized` is for the queue worker, whose bytes were already put through
     `sanitize_image_bytes` at enqueue time. Re-encoding them would cost a second
@@ -222,7 +224,7 @@ def _match_photo(
         return search_variants(
             queries, snapshot.packed, limit=limit,
             max_distance=SHORTLIST_MAX_DISTANCE,
-        ), False
+        ), None
 
     views = card_embedding.embed_photo_views(data)
     if not views:
@@ -232,7 +234,7 @@ def _match_photo(
         return search_variants(
             queries, snapshot.packed, limit=limit,
             max_distance=SHORTLIST_MAX_DISTANCE,
-        ), False
+        ), None
 
     whitened = snapshot.whitening.apply(np.asarray(views, dtype=np.float32))
     # Best of the views, not their average: the crop and the whole frame are
@@ -245,9 +247,12 @@ def _match_photo(
         np.minimum(hamming, distances(query, snapshot.packed), out=hamming)
 
     scores = fuse_similarity(similarity, hamming, snapshot.embedded)
-    return rank_fused(
+    ranked = rank_fused(
         scores, hamming, limit=limit, max_distance=SHORTLIST_MAX_DISTANCE
-    ), True
+    )
+    # The scores come back with the ranking, because the badge is calibrated on
+    # the margin between tiles and there is nowhere else to recover it from.
+    return ranked, {row: float(scores[row]) for row, _ in ranked}
 
 
 async def recognize_local_photo(
@@ -288,7 +293,7 @@ async def recognize_local_photo(
         raise HTTPException(status_code=400, detail=str(exc))
     if result is None:
         raise HTTPException(status_code=400, detail="Could not read the uploaded image.")
-    ranked, fused = result
+    ranked, fused_scores = result
 
     # Judged on the ungrouped ranking, deliberately. Collapsing a German and an
     # English printing into one tile would turn a zero margin into a wide one
@@ -308,32 +313,42 @@ async def recognize_local_photo(
     # confidence: its shortlist finds the right artwork 99.90% of the time
     # against the hash's 90.67%, so the user is being asked to confirm a much
     # better list, not left without an answer.
-    confident = False if fused else is_confident(ranked)
+    confident = is_confident(ranked) if fused_scores is None else False
     rows = snapshot.rows
 
     groups = _group_by_artwork(ranked, rows, SHORTLIST)
     leader_counts = match_leader_counts([group[0] for group in groups])
 
+    # One number for the whole shortlist: how far the leading tile is clear of
+    # the next one. Read at the TILE level, after grouping, because two rows of
+    # one artwork are one answer and the gap between them is not evidence of
+    # anything.
+    tile_margin = None
+    if fused_scores is not None and len(groups) >= 2:
+        tile_margin = fused_scores[groups[0][0][0]] - fused_scores[groups[1][0][0]]
+
     matches = []
-    for group, leaders in zip(groups, leader_counts):
+    for rank, (group, leaders) in enumerate(zip(groups, leader_counts), start=1):
         # One percentage for the whole group. Every printing in it is the same
         # picture, so "this is the right artwork" is true of all of them or none
         # -- unlike two different cards at the same distance, which is what
         # `leaders` divides the odds between.
         #
-        # None on the fused path, and the UI then renders no badge at all.
-        # `match_probability` reads a table indexed by Hamming distance, and on
-        # the fused path the tile was chosen by the embedding, so its distance
-        # is whatever the hash happened to think -- frequently 18 to 22, deep in
-        # the tail. Live, that printed "1%" beside cards the scanner had found
-        # correctly at tile 1. That is the original defect inverted: a measured
-        # curve applied to a population it was not measured on, understating
-        # this time instead of overstating. A number that says 1% about a
-        # correct answer teaches the user to ignore the number.
-        percent = (
-            None if fused
-            else match_probability(group[0][1], leaders=leaders)
-        )
+        # Two rankings, two calibrations. Hamming distance explains a ranking
+        # the hash produced; it explains nothing about one the embedding
+        # produced, where the chosen tile's distance is whatever the hash
+        # thought of a card it could not find. Live, that printed "1%" beside
+        # seven cards found correctly at tile 1 -- the same defect as scoring
+        # tied rows off the rank-1 curve, running the other way.
+        #
+        # A lone tile has no margin to measure, so it gets no number rather
+        # than an invented one.
+        if fused_scores is None:
+            percent = match_probability(group[0][1], leaders=leaders)
+        elif tile_margin is None:
+            percent = None
+        else:
+            percent = fused_match_probability(tile_margin, rank)
         printings = [_candidate(rows[i], distance, percent)
                      for i, distance in group]
         match = printings[0]

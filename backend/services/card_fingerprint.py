@@ -240,6 +240,92 @@ def match_probability(distance: int, *, leaders: int) -> int:
     return max(1, value)
 
 
+# The same question for the fused ranking, which needs a different variable.
+#
+# `match_probability` is indexed by Hamming distance, and on the fused path the
+# tile was chosen by the embedding, so its distance is whatever the hash thought
+# of a card the hash could not find -- 18 to 22 for a batch of ordinary
+# standard-layout cards. Live, that printed "1%" beside seven cards the scanner
+# had just got right at tile 1. Distance is simply not what decided the order
+# any more, so it cannot be what explains it.
+#
+# The margin between the leading tile's fused score and the next tile's is.
+# Measured over 7,098 degraded photographs, on the GROUPED shortlist, jointly by
+# margin and rank -- exactly one tile can be the right artwork, so reading the
+# joint rather than two marginals makes "these cannot sum past 100%" a property
+# of the measurement instead of a rule to enforce afterwards:
+#
+#   margin        n   tile 1   tile 2   tile 3   each of 4-12     sum
+#   <0.25       755    47.3%    36.8%     7.7%          0.87%   99.6%
+#   0.25-0.5    305    60.7%    34.4%     3.6%          0.15%  100.0%
+#   0.5-0.75    247    80.2%    16.2%     2.8%          0.00%   99.2%
+#   0.75-1      238    88.2%    10.5%     1.3%          0.00%  100.0%
+#   1-1.5       461    95.4%     3.9%     0.4%          0.00%   99.8%
+#   1.5-2       462    97.8%     1.5%     0.4%          0.02%  100.0%
+#   2-3         840   100.0%     0.0%     0.0%          0.00%  100.0%
+#   3-4         534   100.0%     0.0%     0.0%          0.00%  100.0%
+#   >4        3,256   100.0%     0.0%     0.0%          0.00%  100.0%
+#
+# 65% of photographs land above margin 2, where the leading tile was right
+# 4,630 times out of 4,630. The bottom bucket is the honest one: at a margin
+# under 0.25 the leader is right less than half the time and the runner-up is
+# right more than a third, which is a shortlist the user genuinely has to read.
+#
+# Stored against bucket MIDPOINTS and interpolated, so a hair of extra margin
+# does not jump the badge from 61% to 80%.
+_FUSED_MARGINS = (0.125, 0.375, 0.625, 0.875, 1.25, 1.75, 2.5, 3.5, 5.0)
+_FUSED_PROBABILITY = {
+    1: (0.473, 0.607, 0.802, 0.882, 0.954, 0.978, 0.99, 0.99, 0.99),
+    2: (0.368, 0.344, 0.162, 0.105, 0.039, 0.015, 0.005, 0.005, 0.005),
+    3: (0.077, 0.036, 0.028, 0.013, 0.004, 0.004, 0.002, 0.002, 0.002),
+}
+
+# Tiles past the third never carry a number. They were measured as one pooled
+# bucket, not individually, and that bucket is under 0.9% at every margin -- so
+# there is no per-tile claim to print. Rounding it up to 1% across nine tiles is
+# also precisely how a shortlist ends up asserting 101%, which is the arithmetic
+# this whole table exists to make impossible.
+LAST_SCORED_TILE = 3
+
+
+def fused_match_probability(margin: float, rank: int) -> int | None:
+    """Measured chance this tile is the right artwork, for a fused ranking.
+
+    `margin` is the leading tile's fused score minus the next tile's -- one
+    number describing the whole shortlist, which is why every rank reads it.
+    `rank` is 1-based, and past `LAST_SCORED_TILE` the answer is None.
+
+    None, not 1, when the measurement rounds below a percent. The hash path
+    floors at 1% because its lowest measured value is 0.2% and "0%" would be a
+    stronger claim than the data supports. Here the data is different: past
+    margin 2, tiles 2 and 3 were wrong 840 times out of 840, and rounding that
+    up to 1% on eleven tiles is how a shortlist ends up claiming 110%. A tile
+    with nothing to say says nothing, and the review UI already renders no badge
+    for a candidate without one.
+
+    Capped at 99 rather than the measured 100. Four thousand consecutive correct
+    answers is not proof of certainty, and the shortlist exists precisely
+    because the user is the one who confirms.
+    """
+    if rank > LAST_SCORED_TILE:
+        return None
+    table = _FUSED_PROBABILITY[max(rank, 1)]
+    if margin <= _FUSED_MARGINS[0]:
+        value = table[0]
+    elif margin >= _FUSED_MARGINS[-1]:
+        value = table[-1]
+    else:
+        value = table[-1]
+        for i in range(len(_FUSED_MARGINS) - 1):
+            low, high = _FUSED_MARGINS[i], _FUSED_MARGINS[i + 1]
+            if low <= margin <= high:
+                weight = (margin - low) / (high - low)
+                value = table[i] + (table[i + 1] - table[i]) * weight
+                break
+    percent = round(value * 100)
+    return percent if percent >= 1 else None
+
+
 def _interpolate(table: dict[int, float], distance: int) -> int:
     """A measured curve read at `distance`, as a whole percentage."""
     known = sorted(table)

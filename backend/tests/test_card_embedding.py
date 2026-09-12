@@ -424,26 +424,55 @@ class EmbeddedEndpointTests(unittest.TestCase):
                 p.start()
         self.assertTrue(body["_identity_confident"])
 
-    def test_it_prints_no_percentage_it_cannot_justify(self):
+    def test_the_badge_is_calibrated_on_the_margin_not_the_distance(self):
         """A distance curve must not label a ranking that ignored distance.
 
         Live, the embedding found seven of ten cards at tile 1 and the badge
         said "1%" beside them, because `match_probability` reads a table indexed
-        by Hamming distance and the embedding had picked tiles whose distance was
-        18 to 22. That is the defect this branch started with, inverted:
-        understating a correct answer instead of overstating a wrong one, and
+        by Hamming distance and the embedding had picked tiles whose distance
+        was 18 to 22. That is the defect this branch started with, inverted:
+        understating a correct answer rather than overstating a wrong one, and
         just as corrosive -- a number that says 1% about the right card teaches
         the user to stop reading it.
         """
         target = _image(12)
-        self._add("quiet_en", target)
+        self._add("clear_en", target)
         for seed in range(70, 78):
             self._add(f"q{seed}_en", _image(seed))
+        # The margin is between TILES, so there have to be two. These fixtures
+        # are unrelated synthetic images, so most sit past the hash cutoff and
+        # would be dropped, leaving a lone tile with nothing to measure against.
+        with patch("api.recognize_local.SHORTLIST_MAX_DISTANCE", 64):
+            matches = self._post(target).json()["matches"]
+        self.assertEqual(matches[0]["id"], "clear_en")
+        leader = matches[0]["_match_percent"]
+        self.assertIsInstance(leader, int)
+        self.assertLessEqual(leader, 99, "no measurement here supports certainty")
+        for other in matches[1:]:
+            if other["_match_percent"] is not None:
+                self.assertLess(other["_match_percent"], leader)
+
+    def test_a_fused_shortlist_does_not_claim_more_than_a_certainty(self):
+        """Exactly one tile can be the right artwork, so they share 100%."""
+        target = _image(14)
+        self._add("share_en", target)
+        for seed in range(120, 130):
+            self._add(f"s{seed}_en", _image(seed))
+        with patch("api.recognize_local.SHORTLIST_MAX_DISTANCE", 64):
+            matches = self._post(target).json()["matches"]
+        shown = [m["_match_percent"] for m in matches if m["_match_percent"] is not None]
+        self.assertTrue(shown, "the leading tile must carry a number")
+        self.assertLessEqual(sum(shown), 100)
+
+    def test_a_lone_tile_carries_no_margin_and_so_no_number(self):
+        """One tile is not a comparison, and the badge is calibrated on one."""
+        target = _image(15)
+        self._add("only_en", target)
+        for seed in range(140, 148):
+            self._add(f"o{seed}_en", _image(seed))
         matches = self._post(target).json()["matches"]
-        self.assertEqual(matches[0]["id"], "quiet_en")
-        for match in matches:
-            self.assertIsNone(match["_match_percent"])
-            self.assertIsNone(match["_confidence"])
+        self.assertEqual(len(matches), 1, "the cutoff should leave one tile here")
+        self.assertIsNone(matches[0]["_match_percent"])
 
     def test_the_hash_path_still_prints_its_measured_percentage(self):
         """Going quiet on one path must not silence the calibrated one."""
