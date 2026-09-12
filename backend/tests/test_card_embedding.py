@@ -78,6 +78,11 @@ def _image(seed, size=(245, 337)):
     return Image.fromarray(pixels)
 
 
+async def _noop():
+    """An awaitable for patched fire-and-forget coroutines."""
+    return 0
+
+
 def _jpeg(image):
     buf = io.BytesIO()
     image.save(buf, "JPEG", quality=92)
@@ -504,15 +509,50 @@ class EmbeddedEndpointTests(unittest.TestCase):
         self.assertGreaterEqual(self.session.calls - before, 2)
 
     def test_a_photo_the_model_cannot_read_falls_back_to_the_hash(self):
-        """Degrades to the old path rather than failing the scan."""
+        """Degrades to the old path rather than failing the scan -- but says so.
+
+        The two rankings are 99.9% against 90.7% shortlist recall, and 9 of 10
+        against 2 of 10 on real photographs. A model that quietly stopped
+        loading would make the scanner much worse with nothing anywhere saying
+        why, which is the failure this logs and reports rather than hides.
+        """
         target = _image(11)
         self._add("fallback_en", target)
         for seed in range(60, 68):
             self._add(f"g{seed}_en", _image(seed))
         with patch.object(card_embedding, "embed_photo_views", return_value=[]):
-            response = self._post(target)
+            with self.assertLogs("api.recognize_local", level="WARNING") as logs:
+                response = self._post(target)
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(response.json()["matches"][0]["id"], "fallback_en")
+        body = response.json()
+        self.assertEqual(body["matches"][0]["id"], "fallback_en")
+        self.assertEqual(body["_ranked_by"], "hash")
+        self.assertTrue(any("perceptual hash alone" in line for line in logs.output))
+
+    def test_the_answer_says_which_ranking_produced_it(self):
+        target = _image(16)
+        self._add("named_en", target)
+        for seed in range(150, 158):
+            self._add(f"n{seed}_en", _image(seed))
+        self.assertEqual(self._post(target).json()["_ranked_by"], "embedding")
+
+    def test_the_review_images_are_warmed_for_the_offline_shortlist_too(self):
+        """This shortlist needs the warm cache more than the provider's does.
+
+        It claims less and is built to be compared against the user's own photo
+        in the full-screen viewer, so the candidate a reviewer opens IS the
+        answer rather than a second opinion.
+        """
+        target = _image(17)
+        self._add("warm_en", target)
+        for seed in range(160, 168):
+            self._add(f"w{seed}_en", _image(seed))
+        with patch("api.recognize_local.prewarm_candidate_images") as prewarm:
+            prewarm.return_value = _noop()
+            self._post(target)
+        self.assertEqual(prewarm.call_count, 1)
+        warmed = prewarm.call_args[0][0]
+        self.assertTrue(warmed and warmed[0]["id"] == "warm_en")
 
 
 @unittest.skipUnless(DEPS_AVAILABLE, "Scanner dependencies are not installed")

@@ -50,6 +50,7 @@ from services.card_fingerprint import (
     rank_fused,
     search_variants,
 )
+from services.scan_candidate_images import prewarm_candidate_images
 from services.scan_storage import (
     MAX_FILE_BYTES,
     ScanUploadError,
@@ -60,6 +61,11 @@ from services.scan_storage import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Strong references to in-flight prewarm tasks. asyncio only holds a weak one,
+# so without this the garbage collector can cancel a fire-and-forget task
+# mid-download.
+_candidate_prewarm_tasks: set[asyncio.Task] = set()
 
 # How many candidates the review UI is offered. This is the number the
 # accuracy figures in services/card_fingerprint are quoted at (91.62% of photos
@@ -233,7 +239,16 @@ def _match_photo(
     if not views:
         # The model is configured but this photo did not survive it. Ranking on
         # the hash alone is exactly what a row with no embedding already does,
-        # so this degrades rather than fails.
+        # so this degrades rather than fails -- but it degrades a LONG way, and
+        # it used to do so in total silence. The two rankings are 99.9% against
+        # 90.7% shortlist recall on the synthetic set, and 9 of 10 against 2 of
+        # 10 on real photographs. A user whose model quietly stopped loading
+        # would see the scanner get much worse with nothing anywhere saying so.
+        logger.warning(
+            "local scan: the embedding model is configured and the index is "
+            "built, but this photo produced no views -- ranking on the "
+            "perceptual hash alone, which is markedly less accurate"
+        )
         return search_variants(
             queries, snapshot.packed, limit=limit,
             max_distance=SHORTLIST_MAX_DISTANCE,
@@ -361,6 +376,22 @@ async def recognize_local_photo(
             match["_other_printings"] = printings[1:]
         matches.append(match)
 
+    # Warm the review's first clicks, exactly as api/recognize.py does for the
+    # provider path. This shortlist needs it MORE, not less: it claims less and
+    # is built to be compared against the user's own photo in the full-screen
+    # viewer, so the candidate a reviewer opens is the whole point rather than
+    # a second opinion. Fired rather than awaited, against its own database
+    # session, so a slow CDN can never add latency to a scan.
+    if matches:
+        try:
+            task = asyncio.create_task(prewarm_candidate_images(matches))
+            _candidate_prewarm_tasks.add(task)
+            task.add_done_callback(_candidate_prewarm_tasks.discard)
+        except RuntimeError:
+            # No running loop (some sync test harnesses) -- a cold cache on the
+            # first review is the only consequence.
+            pass
+
     return {
         # No text was read, so nothing is claimed about the printed identity.
         "recognized": {
@@ -374,6 +405,11 @@ async def recognize_local_photo(
         "_identity_confident": confident,
         "_identity_decision": "local_image" if confident else None,
         "_source": "local_fingerprint",
+        # Which ranking produced this shortlist. The two are far apart in
+        # accuracy, and the fallback between them is silent by design, so the
+        # answer has to carry the fact rather than leaving it to be inferred
+        # from whether a badge happened to show up.
+        "_ranked_by": "embedding" if fused_scores is not None else "hash",
     }
 
 
