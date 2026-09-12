@@ -620,6 +620,66 @@ def fingerprint_reference(image_bytes: bytes) -> bytes | None:
     return _pack_bits(bits)
 
 
+# A card photographed on its side is not a rare accident -- half of one real
+# 37-photo batch was shot that way -- and it defeats the detector completely.
+# `find_card_box` accepts a box whose aspect is 0.35 to 1.35, because a card is
+# 0.716 tall-ways; on its side it measures about 1.48 and is rejected outright.
+# No box means no crop, so the whole landscape frame gets matched, and a card
+# that ranks 1st upright ranked roughly 20,000th sideways.
+#
+# The fix is NOT to widen that gate. Rotating the IMAGE first makes the card
+# upright again, and the unchanged detector then finds it at aspect 0.66-0.70 --
+# comfortably inside the limits it already has. Widening the gate instead would
+# start accepting genuinely wrong boxes on upright photos, and measured alone it
+# rescued nothing (24,827 -> 15,244, still hopeless). Rotation is what rescues
+# it: those two photos land at rank 2 and rank 6.
+#
+# Only when the upright detector FAILED, which is the whole point. Every extra
+# view lowers every catalogue row's score, not just the right one, so the noise
+# floor rises with the signal -- that is why merging a 180-degree variant was
+# measured and rejected (Mew ex 4106 -> 8618, Veluza 6 -> 12). Keying on "no box
+# was found" means a photo that already works is bit-for-bit unaffected: on the
+# batch that prompted this, detection succeeded on 19 of 19 upright photos and
+# failed on 18 of 18 sideways ones, so the condition separates them exactly.
+# It is also better than keying on a landscape frame, because a card lying
+# sideways inside a PORTRAIT frame fails detection too, and gets rescued as well.
+_SIDEWAYS_ROTATIONS = (90, -90)
+
+
+def photo_views(img: Image.Image) -> list[Image.Image]:
+    """Every framing of one photograph worth matching, best guess first.
+
+    Shared by the perceptual hash and the dense embedding so the two can never
+    disagree about which parts of a photo are worth looking at.
+    """
+    try:
+        box = find_card_box(img)
+    except Exception:
+        logger.debug("fingerprint: card detection failed", exc_info=True)
+        return []
+
+    if box is None:
+        views = [img]
+        for angle in _SIDEWAYS_ROTATIONS:
+            turned = img.rotate(angle, expand=True)
+            try:
+                turned_box = find_card_box(turned)
+            except Exception:
+                logger.debug("fingerprint: detection failed on a rotation", exc_info=True)
+                continue
+            # Only the crop. A rotated FULL frame is the same pixels as the
+            # upright full frame in a different arrangement, and a global
+            # descriptor of it says nothing the original did not.
+            if turned_box is not None:
+                views.append(turned.crop(turned_box))
+        return views
+
+    width, height = img.size
+    area = (box[2] - box[0]) * (box[3] - box[1]) / float(width * height)
+    cropped = img.crop(box)
+    return [img, cropped] if area >= _ALREADY_TIGHT else [cropped, img]
+
+
 def photo_hash_variants(image_bytes: bytes) -> list[bytes]:
     """Every fingerprint of one photograph worth searching, best guess first.
 
@@ -640,18 +700,7 @@ def photo_hash_variants(image_bytes: bytes) -> list[bytes]:
     img = _open(image_bytes)
     if img is None:
         return []
-    try:
-        box = find_card_box(img)
-    except Exception:
-        logger.debug("fingerprint: card detection failed", exc_info=True)
-        return []
-
-    candidates = [img]
-    if box is not None:
-        width, height = img.size
-        area = (box[2] - box[0]) * (box[3] - box[1]) / float(width * height)
-        cropped = img.crop(box)
-        candidates = [img, cropped] if area >= _ALREADY_TIGHT else [cropped, img]
+    candidates = photo_views(img)
 
     hashes: list[bytes] = []
     for candidate in candidates:

@@ -22,6 +22,7 @@ from services.card_fingerprint import (  # noqa: E402
     fingerprint_photo,
     fingerprint_reference,
     hash_bits,
+    photo_hash_variants,
     is_confident,
     search,
 )
@@ -1003,6 +1004,59 @@ class FusedMatchProbabilityTests(unittest.TestCase):
                     total, 100,
                     "every tile in the shortlist, not just the measured three",
                 )
+
+
+class SidewaysCardTests(unittest.TestCase):
+    """A card lying on its side, which defeated detection completely."""
+
+    def _sideways(self, seed=5):
+        """A card rotated 90 degrees inside a landscape frame."""
+        card = _card(seed=seed)
+        frame = _on_desk(card, pad_x=60, pad_y=50)
+        return frame.rotate(90, expand=True)
+
+    def test_the_detector_alone_cannot_see_a_sideways_card(self):
+        """The bug, pinned. A card is 0.716 upright and about 1.4 on its side,
+        and the box gate stops at 1.35, so detection returns nothing at all."""
+        turned = self._sideways()
+        self.assertGreater(turned.width, turned.height)
+        self.assertIsNone(find_card_box(turned))
+        self.assertLess(card_fingerprint._MAX_ASPECT, 1.39)
+
+    def test_a_sideways_card_is_still_found_by_rotating_the_photo(self):
+        """Rotating the IMAGE makes the card upright, and the UNCHANGED gate
+        then accepts it. Measured on real photos at aspect 0.66-0.70."""
+        views = card_fingerprint.photo_views(self._sideways())
+        self.assertGreater(len(views), 1, "a rotated view must be offered")
+        cropped = [v for v in views[1:] if v.height > v.width]
+        self.assertTrue(cropped, "at least one view must be an upright card")
+        aspect = cropped[0].width / cropped[0].height
+        self.assertLess(aspect, card_fingerprint._MAX_ASPECT)
+
+    def test_an_upright_photo_is_left_exactly_as_it_was(self):
+        """The condition is "detection failed", so a working photo pays nothing.
+
+        Every extra view lowers every catalogue row's score, not just the right
+        one. Merging a 180-degree variant was measured and rejected for exactly
+        that reason, so this must not quietly start doing it everywhere.
+        """
+        frame = _on_desk(_card(seed=6))
+        self.assertIsNotNone(find_card_box(frame))
+        views = card_fingerprint.photo_views(frame)
+        self.assertEqual(len(views), 2, "crop and full frame, and nothing else")
+
+    def test_the_hash_and_the_embedding_see_the_same_views(self):
+        """One definition, so the two rankings cannot disagree about framing."""
+        frame = _on_desk(_card(seed=7))
+        self.assertEqual(
+            len(card_fingerprint.photo_views(frame)),
+            len(photo_hash_variants(_to_bytes(frame))),
+        )
+
+    def test_a_photo_with_no_card_at_all_still_returns_something(self):
+        blank = Image.new("RGB", (400, 300), (128, 128, 128))
+        views = card_fingerprint.photo_views(blank)
+        self.assertTrue(views, "the frame itself is always a view")
 
 
 class SearchVariantsTests(unittest.TestCase):

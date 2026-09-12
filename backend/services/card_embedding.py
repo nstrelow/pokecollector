@@ -280,18 +280,10 @@ def embed_photo_views(image_bytes: bytes) -> list[np.ndarray]:
     losing rank. "More variants is not a strategy" is a property of a 64-bit
     Hamming space, not a law.
     """
-    from services.card_fingerprint import find_card_box
+    from services.card_fingerprint import photo_views
 
     img = _open(image_bytes)
     if img is None:
         return []
-    views = [img]
-    try:
-        box = find_card_box(img)
-    except Exception:
-        logger.debug("card embedding: card detection failed", exc_info=True)
-        box = None
-    if box is not None:
-        views.insert(0, img.crop(box))
-    vectors = [_tokens(view) for view in views]
+    vectors = [_tokens(view) for view in photo_views(img)]
     return [v for v in vectors if v is not None]
