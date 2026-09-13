@@ -334,7 +334,7 @@ score artwork at all:
 
 - **Printed collector number** (`services/card_ocr.py`) — optional, enabled by
   `LOCAL_SCANNER_OCR=1`, which at build time also installs
-  `rapidocr-onnxruntime` and `opencv-python-headless` (+311MB). It reads the
+  `rapidocr-onnxruntime` and `opencv-python-headless` (+186MB). It reads the
   `NNN/TTT` from the bottom of the card and resolves it against
   `sets.printed_total`, joined on `(tcg_set_id, lang)` — deliberately not
   against a set code, which the recogniser reads badly and consistently
@@ -363,9 +363,11 @@ score artwork at all:
   and there is no cheap gate to hide it behind, since the embedding path never
   claims confidence anyway. A photo that reads a number is faster than one that
   does not, because failure pays for every framing. On the 25 of those photos
-  with a known printed number it read 20 correctly, 5 not at all, and **none
-  incorrectly** — the failure mode is silence rather than a confident wrong
-  answer, which is what makes reordering on it safe.
+  with a known printed number it read 22 correctly, 2 not at all, and **1
+  incorrectly** — `010/064` as `70/64`, which another set really prints, so
+  neither the plausibility check nor the catalogue lookup rejected it and it
+  promoted the wrong card. Most misreads name nothing and disappear quietly;
+  that one did not, which is why the merge only ever reorders.
   `LOCAL_SCANNER_MODEL_THREADS` caps its onnxruntime pool as well — shared on
   purpose, as both are onnxruntime competing for the same cores.
 
