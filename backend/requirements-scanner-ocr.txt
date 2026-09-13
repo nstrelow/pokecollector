@@ -1,0 +1,19 @@
+# Reading the printed collector number (services/card_ocr.py).
+#
+# Separate from requirements-scanner.txt because it is a separate decision: the
+# embedding is ~70MB and this is another ~167MB, and an installation may
+# sensibly want one without the other. Enabled by LOCAL_SCANNER_OCR.
+#
+# rapidocr-onnxruntime is only 14MB and bundles its models; the weight is
+# OpenCV. It must be the headless build -- plain opencv-python pulls GUI
+# libraries and dies on libxcb in a slim container.
+# rapidocr depends on `opencv-python`, which links the GUI stack and dies on a
+# missing libxcb.so.1 in a slim image. Listing the headless build here is not
+# enough on its own: pip installs BOTH distributions, they ship the same `cv2`
+# package directory, and whichever lands last owns it -- which was the GUI one,
+# so an image that looked correctly configured failed at `import cv2`. The
+# Dockerfile removes `opencv-python` afterwards and reinstalls this one over the
+# shared directory. Check `pip list | grep opencv` shows only the headless build
+# if OCR ever goes quiet after a dependency bump.
+rapidocr-onnxruntime>=1.2,<2
+opencv-python-headless>=4.9,<6

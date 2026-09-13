@@ -329,6 +329,38 @@ Two rankers, and which one ran is reported as `_ranked_by` on every answer:
   The hash is kept because two language printings of one card are the same
   picture to the embedding and different renders to the hash.
 
+A third signal is not a ranker and is listed separately because it does not
+score artwork at all:
+
+- **Printed collector number** (`services/card_ocr.py`) — optional, enabled by
+  `LOCAL_SCANNER_OCR=1`, which at build time also installs
+  `rapidocr-onnxruntime` and `opencv-python-headless` (+311MB). It reads the
+  `NNN/TTT` from the bottom of the card and resolves it against
+  `sets.printed_total`, joined on `(tcg_set_id, lang)` — deliberately not
+  against a set code, which the recogniser reads badly and consistently
+  (`DCBL` for a printed `PBL`). A (number, printed total) pair identifies a
+  single artwork 64.7% of the time and three or fewer 94% of the time.
+
+  The merge in `_apply_printed_number` is **additive only**: it promotes and
+  appends candidates and can never remove one the artwork search found, since
+  an OCR misread is at least as likely as a wrong image match. Because it can
+  reach cards with no artwork at all — 22% of the catalogue, absent from the
+  index entirely — those rows are fetched from the database rather than the
+  index snapshot. When it reorders anything, the answer stops claiming
+  confidence, because the badge's calibration never saw this evidence. Results
+  carry `_printed_numbers`.
+
+  It is not free: measured through the deployed endpoint on 87 real photos the
+  median scan goes to ~4.3s against ~25ms for the whole fingerprint pipeline,
+  and there is no cheap gate to hide it behind, since the embedding path never
+  claims confidence anyway. A photo that reads a number is faster than one that
+  does not, because failure pays for every framing. On the 25 of those photos
+  with a known printed number it read 20 correctly, 5 not at all, and **none
+  incorrectly** — the failure mode is silence rather than a confident wrong
+  answer, which is what makes reordering on it safe.
+  `LOCAL_SCANNER_MODEL_THREADS` caps its onnxruntime pool as well — shared on
+  purpose, as both are onnxruntime competing for the same cores.
+
 A row without an embedding is ranked on its hash alone, so the two coexist
 while a backfill catches up. If the model is configured but a photo produces no
 views, the scan degrades to hash-only and says so in the log and in
@@ -342,9 +374,12 @@ margin the hash never had.
 
 Known limits, all measured and documented in the benchmark notes: the scanner
 cannot separate two language printings by artwork alone; roughly a fifth of the
-catalogue has no artwork and can never be matched; and a photo of such a card
-is still answered confidently rather than refused, because no score in the
-system distinguishes "absent" from "hard".
+catalogue has no artwork and can never be matched by image; and a photo of such
+a card is still answered confidently rather than refused, because no score in
+the system distinguishes "absent" from "hard". The printed-number reader above
+is the only signal that addresses the last two, and only when it is enabled and
+the number happens to be legible — on a 87-photo real-world set it resolved a
+catalogue card for 49 of them.
 
 Provider error handling:
 

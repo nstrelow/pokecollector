@@ -36,8 +36,9 @@ import numpy as np
 from api.auth import get_current_user
 from database import get_db
 from models import User
-from services import card_embedding, fingerprint_index
+from services import card_embedding, card_ocr, fingerprint_index
 from services.card_fingerprint import (
+    HASH_BITS,
     MAX_DISTANCE,
     SHORTLIST_MAX_DISTANCE,
     distances,
@@ -50,6 +51,7 @@ from services.card_fingerprint import (
     rank_fused,
     search_variants,
 )
+from services.card_visibility import indexable_card_filter
 from services.scan_candidate_images import prewarm_candidate_images
 from services.scan_storage import (
     MAX_FILE_BYTES,
@@ -283,6 +285,82 @@ def _match_photo(
     return ranked, {row: float(scores[row]) for row, _ in ranked}
 
 
+def _apply_printed_number(db, raw_bytes, ranked, rows, sanitized):
+    """Let the printed collector number reorder the shortlist. Never shrink it.
+
+    OCR is a stronger identity signal than any image score here -- a legible
+    (number, printed total) pair narrows 45,000 cards to three or fewer 94% of
+    the time -- and it is the only signal that reaches the 22% of the catalogue
+    with no artwork at all, which the fingerprint index simply does not contain.
+
+    ADDITIVE, in both directions, and that is the whole safety argument:
+
+    * a card the number names is promoted, or inserted if the image path never
+      had it -- which is how an artwork-less card gets found at all;
+    * a card the number does NOT name keeps its place below, and is never
+      dropped. A misread would otherwise delete the right answer, and the
+      recogniser does misread: it reports a printed `PBL` as `DCBL`.
+
+    A read that resolves to no catalogue row is discarded before any of this,
+    so the common failure mode -- reading noise -- changes nothing.
+
+    Returns `(ranked, rows, reads)`. `rows` may be longer than the snapshot's,
+    because a card with no artwork is not in the index and has to be fetched.
+    """
+    if not card_ocr.available():
+        return ranked, rows, []
+    reads = card_ocr.read_printed_numbers(raw_bytes)
+    if not reads:
+        return ranked, rows, []
+    resolved = card_ocr.resolve(db, reads, indexable_card_filter(db))
+    if not resolved:
+        logger.debug("card ocr: read %s, which names no catalogue row",
+                     [str(r) for r in reads])
+        return ranked, rows, []
+
+    named = {card_id: read for card_id, read in resolved}
+    position = {rows[i]["id"]: n for n, (i, _) in enumerate(ranked)}
+    by_id = {rows[i]["id"]: (i, d) for i, d in ranked}
+
+    promoted = [by_id[cid] for cid in named if cid in by_id]
+    promoted.sort(key=lambda pair: position[rows[pair[0]]["id"]])
+
+    # Cards the number names that the artwork search could not have found,
+    # because they are not in the index at all -- which is the entire reason
+    # this exists. A row with no `images_small` has nothing to fingerprint, so
+    # `fingerprint_index` never loaded it and no amount of looking through
+    # `snapshot.rows` will turn it up. They are fetched here and appended to
+    # the request's own view of the rows, leaving the shared snapshot untouched.
+    worst = max((d for _, d in ranked), default=HASH_BITS)
+    missing = [cid for cid in named if cid not in by_id][:SHORTLIST]
+    if missing:
+        extra = _catalogue_rows(db, missing)
+        rows = tuple(rows) + tuple(extra)
+        for offset, _ in enumerate(extra):
+            promoted.append((len(rows) - len(extra) + offset, worst))
+
+    rest = [pair for pair in ranked if rows[pair[0]]["id"] not in named]
+    return promoted + rest, rows, sorted({str(r) for r in named.values()})
+
+
+def _catalogue_rows(db, card_ids: list[str]) -> list[dict]:
+    """Shortlist-shaped rows for cards the fingerprint index does not hold."""
+    from models import Card  # noqa: PLC0415 - avoids a cycle at import time
+
+    found = (
+        db.query(Card.id, Card.tcg_card_id, Card.name, Card.number,
+                 Card.set_id, Card.lang, Card.rarity, Card.images_small)
+        .filter(Card.id.in_(card_ids))
+        .all()
+    )
+    return [
+        {"id": r.id, "tcg_card_id": r.tcg_card_id, "name": r.name,
+         "number": r.number, "set_id": r.set_id, "lang": r.lang,
+         "rarity": r.rarity, "image": r.images_small}
+        for r in found
+    ]
+
+
 async def recognize_local_photo(
     db: Session,
     raw: bytes,
@@ -344,6 +422,17 @@ async def recognize_local_photo(
     confident = is_confident(ranked) if fused_scores is None else False
     rows = snapshot.rows
 
+    # The printed number, if this installation can read one and it names
+    # something real. Runs after the image search rather than instead of it,
+    # and can only reorder or extend what that search produced.
+    ranked, rows, printed_numbers = await run_in_threadpool(
+        _apply_printed_number, db, raw, ranked, rows, sanitized
+    )
+    if printed_numbers:
+        # A number that names a card is evidence the margin calibration never
+        # saw, and the badge would be reporting the image ranking it replaced.
+        confident = False
+
     groups = _group_by_artwork(ranked, rows, SHORTLIST)
     leader_counts = match_leader_counts([group[0] for group in groups])
 
@@ -351,9 +440,19 @@ async def recognize_local_photo(
     # the next one. Read at the TILE level, after grouping, because two rows of
     # one artwork are one answer and the gap between them is not evidence of
     # anything.
+    #
+    # A row the printed number inserted has no fused score at all: it is not in
+    # the fingerprint index, which is the whole reason OCR reached it, so it was
+    # never ranked by image. A margin measured between a scored tile and an
+    # unscored one is not a number, and inventing one here would feed the badge
+    # a value its calibration has no meaning for -- so there is simply no tile
+    # margin, and `percent` below is already None in that case.
     tile_margin = None
     if fused_scores is not None and len(groups) >= 2:
-        tile_margin = fused_scores[groups[0][0][0]] - fused_scores[groups[1][0][0]]
+        lead = fused_scores.get(groups[0][0][0])
+        runner_up = fused_scores.get(groups[1][0][0])
+        if lead is not None and runner_up is not None:
+            tile_margin = lead - runner_up
 
     matches = []
     for rank, (group, leaders) in enumerate(zip(groups, leader_counts), start=1):
@@ -420,6 +519,10 @@ async def recognize_local_photo(
         # answer has to carry the fact rather than leaving it to be inferred
         # from whether a badge happened to show up.
         "_ranked_by": "embedding" if fused_scores is not None else "hash",
+        # What was read off the card, when anything was. Empty on every
+        # installation without OCR configured, and on every photo whose number
+        # was unreadable or named nothing in the catalogue.
+        "_printed_numbers": printed_numbers,
     }
 
 

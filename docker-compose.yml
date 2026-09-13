@@ -40,6 +40,7 @@ services:
         # embeddings. Derived from the same variable that points at the model,
         # so there is one switch and it cannot be half-set.
         INSTALL_SCANNER_MODEL: ${LOCAL_SCANNER_MODEL:-}
+        INSTALL_SCANNER_OCR: ${LOCAL_SCANNER_OCR:-}
     container_name: pokemon-backend
     restart: unless-stopped
     environment:
@@ -73,6 +74,9 @@ services:
       # alone, exactly as before. See backend/services/card_embedding.py.
       LOCAL_SCANNER_MODEL: ${LOCAL_SCANNER_MODEL:-}
       LOCAL_SCANNER_MODEL_THREADS: ${LOCAL_SCANNER_MODEL_THREADS:-2}
+      # Reads the printed collector number, which is the only signal that
+      # reaches the ~22% of the catalogue with no artwork. Empty by default.
+      LOCAL_SCANNER_OCR: ${LOCAL_SCANNER_OCR:-}
     depends_on:
       postgres:
         condition: service_healthy
