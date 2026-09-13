@@ -58,7 +58,7 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image
 
-from services.card_fingerprint import _open, photo_views
+from services.card_fingerprint import _open, find_card_box
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +82,26 @@ _MIN_STRIP_WIDTH = 700
 # it plus the set code without pulling in the rarity symbol and regulation mark
 # on the right, which is the clutter that costs the wide framing its reads.
 _NUMBER_SIDE = 0.45
+
+# A whole frame is read at this longest edge. The recogniser resizes to its own
+# fixed input anyway, so sending 4000px of phone photo only wastes the decode;
+# 1100 is what the verification pass that found 38 of 50 numbers used.
+_READ_MAX_EDGE = 1100
+
+# Rotations tried when the detector cannot box a card. Turning the frame is
+# what rescues a card lying on its side; reading it upside down is what rescues
+# one photographed the other way up, and neither is knowable in advance.
+_SIDEWAYS = (90, -90)
+_UPSIDE_DOWN = (0, 180)
+
+# A box has to be CARD-shaped before its bottom strip means anything. A card is
+# 0.716 wide-over-tall; `find_card_box` accepts 0.35 to 1.35 because for
+# matching a loose box is still a better picture than the whole frame, but
+# reading a strip is a claim about where the number physically sits, and that
+# claim is only true of a real card. Measured on the 50-card scan: 6 of the 23
+# boxes were 0.80 to 1.35, and the ones past this range were shelves and
+# neighbouring cards whose "bottom strip" held no number at all.
+_CARD_ASPECT = (0.55, 0.85)
 
 # `NNN/TTT`. Deliberately requires the slash: a card also prints a National
 # Pokedex reference like `NO. 0369` near the flavour text, which upstream's LLM
@@ -197,58 +217,116 @@ def _plausible(local: str, total: str) -> bool:
     return 1 <= low <= high + 120 and high >= 20
 
 
-def _upright_views(img: Image.Image) -> list[Image.Image]:
-    """The card, the right way up, from whatever orientation it was shot in.
+def _resized(view: Image.Image, *, at_least: int = 0, at_most: int = 0) -> Image.Image:
+    """The view scaled by its WIDTH, which is what glyph size depends on.
 
-    Reuses `photo_views` first, so OCR sees exactly the framings the matcher
-    sees -- including the rotated crops it produces for a card lying on its
-    side, which is the case that made half of one real batch unreadable. Both
-    rotations are kept because only one of them is right way up and neither is
-    knowable in advance; a strip read upside down simply yields no number.
-
-    Falls back to rotating the frame itself when that yields nothing upright.
-    Matching needs a detected card because it compares whole pictures; reading
-    a number does not, and refusing to look at a landscape photo just because
-    the detector could not box it would give up on exactly the photos the
-    detector is worst at.
+    Always width, never the longest edge. Card text runs horizontally, so how
+    many pixels a digit gets is set by how many pixels the width has -- and the
+    recogniser rescales to its own fixed input anyway. Scaling a portrait photo
+    by its longest edge instead makes it 825 wide where 1100 was intended, and
+    measured on the 50-card scan that alone cost two photos their number.
     """
-    views = [v for v in photo_views(img) if v.height >= v.width]
-    if views:
-        return views
-    return [img.rotate(angle, expand=True) for angle in (90, -90)]
-
-
-def _upscaled(strip: Image.Image) -> Image.Image:
-    if strip.width >= _MIN_STRIP_WIDTH:
-        return strip
-    scale = _MIN_STRIP_WIDTH / max(strip.width, 1)
-    return strip.resize(
-        (int(strip.width * scale), max(1, int(strip.height * scale))),
+    scale = 1.0
+    if at_least and view.width < at_least:
+        scale = at_least / max(view.width, 1)
+    elif at_most and view.width > at_most:
+        scale = at_most / view.width
+    if scale == 1.0:
+        return view
+    return view.resize(
+        (max(1, int(view.width * scale)), max(1, int(view.height * scale))),
         Image.Resampling.LANCZOS,
     )
 
 
-def _framings(views: list[Image.Image]):
-    """Bottom-of-card crops to try, in order, across every view.
+def _card_shaped(box) -> bool:
+    """Whether a detected box is proportioned like an upright card."""
+    if box is None:
+        return False
+    left, top, right, bottom = box
+    width, height = right - left, bottom - top
+    if width <= 0 or height <= 0:
+        return False
+    return _CARD_ASPECT[0] <= width / height <= _CARD_ASPECT[1]
 
-    Two framings, because measured on 87 real photos they are complementary
-    rather than redundant -- the whole strip alone read 50, the left crop alone
-    49, and the two together 54. The detection model runs at a fixed input size,
-    so a 2185x449 strip is squeezed into it and the digits arrive small; cropping
-    to the left 45%, where the number sits on a modern card, spends the same
-    inference on roughly twice the pixels per glyph. Neither dominates: a card
-    that prints its number bottom-right is only in the wide framing, and a
-    cluttered wide strip is only legible in the narrow one.
+
+def _boxed(img: Image.Image):
+    """The card crop from this image, or None -- never raising."""
+    try:
+        box = find_card_box(img)
+    except Exception:
+        logger.debug("card ocr: card detection failed", exc_info=True)
+        return None
+    return img.crop(box) if _card_shaped(box) else None
+
+
+def _card_views(img: Image.Image) -> list[tuple[Image.Image, bool]]:
+    """`(view, is_a_detected_card)` for every orientation worth reading.
+
+    The flag is the whole point. A detected box is a tight card, so the number
+    is in a known place and a strip of it is the cheap read. An undetected frame
+    is NOT a card -- it is a photo containing one somewhere -- and slicing a
+    strip off its bottom reads the table.
+    """
+    views: list[tuple[Image.Image, bool]] = []
+
+    upright = _boxed(img)
+    if upright is not None:
+        views.append((upright, True))
+    else:
+        # A sideways card the detector can box once turned gives a tight crop,
+        # and a tight crop is worth the cheap strip read.
+        for angle in _SIDEWAYS:
+            turned = _boxed(img.rotate(angle, expand=True))
+            if turned is not None:
+                views.append((turned, True))
+
+    # And ALWAYS the whole frame last, however well the boxing went. A box can
+    # be card-shaped and still be the wrong card: on the 50-card scan every card
+    # was photographed lying on a stack of others, and the detector routinely
+    # boxed a neighbour -- whose bottom strip holds a number, just not this
+    # card's. Keeping this as the LAST resort, with the caller's early exit,
+    # means a photo that reads from its strip never pays for it; the cost falls
+    # only on photos that would otherwise have returned nothing at all. Measured
+    # on that scan, it is the difference between 27 of 50 and 34 of 50.
+    #
+    # A landscape frame is turned onto its side rather than read flat, because
+    # the card in it is lying sideways and its text runs vertically up the
+    # image; a portrait frame only needs the other way up trying.
+    turns = _SIDEWAYS if img.width > img.height else _UPSIDE_DOWN
+    views += [(img.rotate(angle, expand=True) if angle else img, False)
+              for angle in turns]
+    return views
+
+
+def _framings(img: Image.Image):
+    """Every crop to hand the recogniser, in order, best guess first.
+
+    For a detected card, two bottom strips: measured on 87 real photos they are
+    complementary rather than redundant -- the whole strip alone read 50, the
+    left 45% alone 49, and the two together 54. The detector runs at a fixed
+    input size, so a 2185x449 strip is squeezed into it and the digits arrive
+    small; cropping to where the number sits spends the same inference on
+    roughly twice the pixels per glyph. Neither dominates: a card numbered
+    bottom-right is only in the wide framing, a cluttered wide strip only
+    legible in the narrow one.
+
+    For an undetected frame, the whole thing, shrunk to a size that keeps the
+    glyphs legible rather than cropped to a place the number is not.
 
     Ordering is by likelihood, not by cost -- every call costs the same ~1.7s
-    whatever the crop, so the only lever on latency is how many run, which is
+    whatever the crop -- so the only lever on latency is how many run, which is
     why the caller stops at the first framing that yields a number.
     """
-    for view in views:
+    for view, is_card in _card_views(img):
+        if not is_card:
+            yield _resized(view, at_most=_READ_MAX_EDGE)
+            continue
         width, height = view.size
         strip = view.crop((0, int(height * _STRIP_TOP), width, height))
-        yield _upscaled(strip)
-        yield _upscaled(strip.crop((0, 0, int(strip.width * _NUMBER_SIDE), strip.height)))
+        yield _resized(strip, at_least=_MIN_STRIP_WIDTH)
+        yield _resized(strip.crop((0, 0, int(strip.width * _NUMBER_SIDE), strip.height)),
+                       at_least=_MIN_STRIP_WIDTH)
 
 
 def read_printed_numbers(image_bytes: bytes) -> list[PrintedNumber]:
@@ -267,7 +345,7 @@ def read_printed_numbers(image_bytes: bytes) -> list[PrintedNumber]:
 
     found: list[PrintedNumber] = []
     seen: set[tuple[str, str]] = set()
-    for strip in _framings(_upright_views(img)):
+    for strip in _framings(img):
         try:
             result, _ = engine(np.asarray(strip.convert("RGB")))
         except Exception:

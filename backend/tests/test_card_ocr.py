@@ -145,25 +145,90 @@ class ReadingTests(unittest.TestCase):
         _, engine = self._read("nothing readable here")
         self.assertGreater(engine.calls, 1)
 
-    def test_the_narrow_framing_is_actually_a_different_crop(self):
-        """Two framings only pay for themselves if they differ; measured, their
-        union reads 54 of 87 real photos against 50 and 49 alone."""
-        from PIL import Image  # noqa: PLC0415
+    # The framing contract, which the 50-card scan rewrote:
+    #   a card-shaped box -> two bottom strips, then the whole frame as a last
+    #   resort; anything else -> the whole frame only. `_strips` below is how
+    #   these tests tell the two apart, since a strip is much wider than tall.
 
-        view = Image.new("RGB", (1000, 1400))
-        widths = [s.width for s in card_ocr._framings([view])]
-        self.assertEqual(len(widths), 2)
-        self.assertNotEqual(widths[0], widths[1])
-        self.assertLess(widths[1], widths[0])
+    @staticmethod
+    def _split(framings):
+        strips = [f for f in framings if f.width > f.height * 2]
+        whole = [f for f in framings if f not in strips]
+        return strips, whole
+
+    def _framings_for(self, img, box):
+        with patch.object(card_ocr, "find_card_box", lambda i: box):
+            return list(card_ocr._framings(img))
+
+    def test_a_detected_card_is_read_as_two_bottom_strips_first(self):
+        """Two strips, because measured on 87 real photos they are
+        complementary rather than redundant -- the whole strip alone read 50,
+        the left 45% alone 49, and the two together 54."""
+        img = Image.new("RGB", (1000, 1400))
+        framings = self._framings_for(img, (0, 0, 1000, 1400))  # 0.71, a card
+        strips, whole = self._split(framings)
+        self.assertEqual(len(strips), 2)
+        self.assertLess(strips[1].width, strips[0].width, "second is the narrow one")
+        self.assertEqual(framings[:2], strips, "the cheap reads come first")
+        self.assertTrue(whole, "and the whole frame is still there as a fallback")
+
+    def test_an_undetected_frame_is_read_WHOLE_not_as_a_strip(self):
+        """The bug this fixes. With no card box the frame is not a card, so its
+        bottom 14% is tablecloth -- on a 50-card scan photographed on a stack,
+        only 23 of 50 could be boxed and the strip reader found 26 numbers
+        against 41 once the frame was read whole."""
+        img = Image.new("RGB", (1000, 1400))
+        strips, whole = self._split(self._framings_for(img, None))
+        self.assertEqual(strips, [], "no card box means no strip is meaningful")
+        self.assertTrue(whole)
+
+    def test_an_undetected_frame_is_read_both_ways_up(self):
+        """Only one rotation is right way up and which is not knowable."""
+        img = Image.new("RGB", (1000, 1400))
+        self.assertEqual(len(self._framings_for(img, None)), 2)
+
+    def test_the_whole_frame_is_always_the_last_resort(self):
+        """A box can be card-shaped and still be the WRONG card -- on the
+        50-card scan the detector routinely boxed a neighbour, whose bottom
+        strip holds a number, just not this card's. Ordering it last means a
+        photo that reads from its strip never pays for it."""
+        img = Image.new("RGB", (1000, 1400))
+        framings = self._framings_for(img, (0, 0, 716, 1000))
+        strips, whole = self._split(framings)
+        self.assertTrue(strips)
+        self.assertTrue(whole)
+        self.assertEqual(framings[-len(whole):], whole)
+
+    def test_a_box_that_is_not_card_shaped_is_not_trusted_for_a_strip(self):
+        """Reading a bottom strip claims the number sits at the bottom, which is
+        only true of an actual card. 6 of 23 boxes on the 50-card scan were
+        0.80-1.35 -- shelves and neighbours whose strip holds no number."""
+        img = Image.new("RGB", (1000, 1400))
+        # inside find_card_box's own 0.35-1.35 gate, but not a card
+        strips, whole = self._split(self._framings_for(img, (0, 0, 1300, 1000)))
+        self.assertEqual(strips, [])
+        self.assertTrue(whole)
 
     def test_a_tiny_strip_is_upscaled_before_reading(self):
         """The benchmark's 420px synthetic photos put the number at ~8px tall
         and scored 13.3% -- a result about the images, not about OCR."""
-        from PIL import Image  # noqa: PLC0415
-
-        view = Image.new("RGB", (200, 280))
-        for strip in card_ocr._framings([view]):
+        img = Image.new("RGB", (200, 280))  # 0.71, card-shaped
+        strips, _ = self._split(self._framings_for(img, (0, 0, 200, 280)))
+        self.assertTrue(strips)
+        for strip in strips:
             self.assertGreaterEqual(strip.width, card_ocr._MIN_STRIP_WIDTH)
+
+    def test_a_huge_frame_is_shrunk_by_its_WIDTH(self):
+        """Width, never the longest edge: card text runs horizontally, so width
+        is what sets glyph size. Scaling a portrait photo by its longest edge
+        makes it 825 wide where 1100 was intended, and measured on the 50-card
+        scan that alone cost two photos their number."""
+        img = Image.new("RGB", (3000, 4000))
+        _, whole = self._split(self._framings_for(img, None))
+        self.assertTrue(whole)
+        for f in whole:
+            self.assertEqual(f.width, card_ocr._READ_MAX_EDGE)
+            self.assertGreater(f.height, f.width, "the aspect is preserved")
 
     def test_it_reads_a_collector_number(self):
         reads, _ = self._read("Illus. Someone|017/084|(c)2026 Pokemon")
