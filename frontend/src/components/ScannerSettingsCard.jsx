@@ -3,17 +3,136 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 
 import {
+  getLocalScannerStatus,
   getScannerConfiguration,
   testScannerConfiguration,
   updateScannerConfiguration,
 } from '../api/client'
+import { useSettings } from '../contexts/SettingsContext'
 import {
   DEFAULT_SCANNER_REQUEST_TIMEOUT_SECONDS,
   SCANNER_REQUEST_TIMEOUT_OPTIONS,
 } from '../utils/scannerTimeout'
 
+export const LOCAL_SCANNER_SETTING = 'local_scanner_enabled'
 
-export default function ScannerSettingsCard({ t }) {
+// Whether the "Scanner v2 (Beta)" switch may be moved, and in which direction.
+// Turning it ON needs a usable offline index; turning it OFF must always be
+// possible, or a user whose index stopped being ready is stuck on a scanner
+// that can no longer answer.
+//
+// Two percentages, because the status endpoint reports two and they are not
+// interchangeable:
+//
+//   cataloguePercent  fingerprinted / every catalogue card. What "how much of
+//                     my catalogue can this recognise" actually means, and the
+//                     number the card shows.
+//   backfillPercent   fingerprinted / cards that HAVE artwork. The backfill's
+//                     progress bar, and what readiness is judged on.
+//
+// They read 76% and 97% on the reference catalogue: 22% of cards have a name
+// and a number and no picture at all, so no image method can ever match them.
+// Showing the second under a "catalogue fingerprinted" label overstated the
+// scanner by twenty-one points, which is a promise the feature cannot keep.
+export function localScannerToggleState({ enabled, status, statusFailed, loading, saving }) {
+  const ready = status?.ready === true
+  const percent = (value) => Math.round((Number(value) || 0) * 100)
+  return {
+    ready,
+    cataloguePercent: percent(status?.catalogue_coverage),
+    backfillPercent: percent(status?.coverage),
+    disabled: Boolean(saving || loading || (!enabled && (!ready || statusFailed))),
+  }
+}
+
+export function LocalScannerCard({ t }) {
+  const { settings, updateSettings } = useSettings()
+  const [saving, setSaving] = useState(false)
+  const { data: status, isLoading, isError } = useQuery({
+    queryKey: ['local-scanner-status'],
+    queryFn: getLocalScannerStatus,
+  })
+
+  const enabled = settings?.[LOCAL_SCANNER_SETTING] === 'true'
+  const { ready, cataloguePercent, backfillPercent, disabled } = localScannerToggleState({
+    enabled,
+    status,
+    statusFailed: isError,
+    loading: isLoading,
+    saving,
+  })
+
+  const change = async (next) => {
+    setSaving(true)
+    try {
+      await updateSettings({ [LOCAL_SCANNER_SETTING]: next ? 'true' : 'false' })
+      toast.success(t('settings.saved'))
+    } catch {
+      toast.error(t('settings.saveFailed'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="rounded-2xl overflow-hidden" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+      <div className="flex flex-col gap-3 px-4 py-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-text-primary">{t('settings.scannerLocalTitle')}</p>
+          <p className="mt-1 max-w-2xl text-xs text-text-muted">{t('settings.scannerLocalDesc')}</p>
+          {isError ? (
+            <p role="status" className="mt-1.5 text-[11px] font-semibold text-brand-red">
+              {t('settings.scannerLocalStatusFailed')}
+            </p>
+          ) : isLoading ? (
+            <p className="mt-1.5 text-[11px] text-text-muted">{t('common.loading')}</p>
+          ) : !ready ? (
+            <p role="status" className="mt-1.5 text-[11px] text-brand-yellow">
+              {t('settings.scannerLocalPreparing')}
+              {' '}
+              <span className="text-text-muted">
+                {t('settings.scannerLocalBackfill')}: {backfillPercent}%
+              </span>
+            </p>
+          ) : (
+            <p role="status" className="mt-1.5 text-[11px]">
+              {enabled && (
+                <span className="font-semibold text-green">
+                  {t('settings.scannerLocalEnabled')}{' '}
+                </span>
+              )}
+              {/* The catalogue fraction, not the backfill's. They differ by
+                  twenty-one points, and this is the one that says what the
+                  scanner can actually recognise. */}
+              <span className="text-text-muted">
+                {t('settings.scannerLocalCoverage')}: {cataloguePercent}%
+              </span>
+            </p>
+          )}
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label={t('settings.scannerLocalTitle')}
+          disabled={disabled}
+          onClick={() => change(!enabled)}
+          className={`relative h-6 w-11 flex-shrink-0 rounded-full transition-colors duration-200 ${
+            enabled ? 'bg-brand-red' : 'bg-bg-elevated border border-border'
+          } ${disabled ? 'cursor-not-allowed opacity-50' : ''}`}
+        >
+          <span
+            className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform duration-200 ${
+              enabled ? 'translate-x-5' : 'translate-x-0'
+            }`}
+          />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ScannerProviderCard({ t }) {
   const queryClient = useQueryClient()
   const { data, isLoading, isError } = useQuery({
     queryKey: ['scanner-configuration'],
@@ -400,5 +519,17 @@ export default function ScannerSettingsCard({ t }) {
         )}
       </div>
     </div>
+  )
+}
+
+// The offline switch sits above the provider settings, and outside them: a user
+// with no working provider is exactly who needs it, so it must still render
+// when the provider configuration fails to load.
+export default function ScannerSettingsCard({ t }) {
+  return (
+    <>
+      <LocalScannerCard t={t} />
+      <ScannerProviderCard t={t} />
+    </>
   )
 }

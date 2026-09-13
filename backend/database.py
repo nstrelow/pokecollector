@@ -75,6 +75,30 @@ def _run_migrations(conn):
         "ALTER TABLE cards ADD COLUMN IF NOT EXISTS is_custom BOOLEAN DEFAULT FALSE",
         "ALTER TABLE sets ADD COLUMN IF NOT EXISTS is_digital BOOLEAN DEFAULT FALSE",
         "ALTER TABLE cards ADD COLUMN IF NOT EXISTS is_digital BOOLEAN DEFAULT FALSE",
+        # Perceptual hash of the card artwork, used for offline recognition.
+        "ALTER TABLE cards ADD COLUMN IF NOT EXISTS image_phash BYTEA",
+        # Which images_small URL that hash was computed from -- the
+        # fingerprint backfill's own provenance/negative-cache column (see
+        # services/fingerprint_backfill.py). No backfill UPDATE runs here: on
+        # every install that reaches this line for the first time,
+        # image_phash is added by the statement immediately above it in this
+        # same migration run and so is entirely NULL, which makes
+        # `WHERE image_phash IS NOT NULL` match zero rows -- not once, but on
+        # every single startup forever, since ADD COLUMN IF NOT EXISTS keeps
+        # this whole list re-running indefinitely. Measured: 0 rows affected
+        # on a 58,630-row upgrade. Existing rows are simply left NULL, exactly
+        # like a fresh column, and `pending_cards()` treats a NULL
+        # `image_phash_source` as pending -- see `stale_fingerprint_filter()`
+        # -- so the ordinary backfill job (not a migration) is what populates
+        # them.
+        "ALTER TABLE cards ADD COLUMN IF NOT EXISTS image_phash_source VARCHAR",
+        # Optional dense embedding and its provenance, for the offline
+        # scanner's accurate path. Both stay NULL unless the installation opts
+        # in with LOCAL_SCANNER_MODEL, so adding the columns costs an empty
+        # column and nothing else -- Postgres stores a NULL in the row header
+        # bitmap, not in the row.
+        "ALTER TABLE cards ADD COLUMN IF NOT EXISTS image_embedding BYTEA",
+        "ALTER TABLE cards ADD COLUMN IF NOT EXISTS image_embedding_source VARCHAR",
         # Create custom_card_matches table if it doesn't exist (handled by create_all, belt+suspenders)
         """CREATE TABLE IF NOT EXISTS custom_card_matches (
             id SERIAL PRIMARY KEY,

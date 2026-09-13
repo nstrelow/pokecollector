@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from models import ScanJob, ScanJobItem, ScanQueueUserState, User
 from services.gemini_rate_limit import gemini_priority_scope
+from services.local_scanner import local_scanner_enabled
 from services.scan_storage import (
     ScanUploadError,
     delete_job_directory,
@@ -62,6 +63,12 @@ _scan_processing_semaphore = _ProcessWideAsyncSemaphore(
     MAX_CONCURRENT_SCAN_PROCESSING
 )
 
+# How an offline scan is labelled in diagnostics. No provider is contacted and
+# no model runs; naming the mechanism that did the work keeps a local scan from
+# reading as a Gemini or OpenAI one in a stored trace.
+LOCAL_SCANNER_PROVIDER = "local"
+LOCAL_SCANNER_MODEL = "artwork-fingerprint"
+
 
 @dataclass(frozen=True)
 class ClaimedScanItem:
@@ -69,6 +76,7 @@ class ClaimedScanItem:
     lease_token: str
     item_ids: tuple[int, ...] = ()
     composite: bool = False
+    recognition_cache_item_ids: tuple[int, ...] = ()
 
     @property
     def all_item_ids(self) -> tuple[int, ...]:
@@ -120,6 +128,7 @@ def recover_expired_leases(db: Session, *, now: datetime.datetime | None = None)
         item.status = "retrying"
         item.next_attempt_at = now
         item.retry_reason = None
+        item.recognized = None
         item.lease_token = None
         item.lease_expires_at = None
         item.error = "Processing was interrupted and will resume automatically."
@@ -184,6 +193,14 @@ def claim_next_scan_item(
         )
         items.extend(siblings)
 
+    recognition_cache_item_ids = tuple(
+        claimed_item.id
+        for claimed_item in items
+        if (
+            claimed_item.retry_reason == "catalogue_unavailable"
+            and isinstance(claimed_item.recognized, dict)
+        )
+    )
     lease_token = uuid.uuid4().hex
     lease_expires_at = now + datetime.timedelta(seconds=lease_seconds)
     for claimed_item in items:
@@ -204,6 +221,7 @@ def claim_next_scan_item(
         item_ids=tuple(claimed_item.id for claimed_item in items),
         lease_token=lease_token,
         composite=len(items) > 1,
+        recognition_cache_item_ids=recognition_cache_item_ids,
     )
 
 
@@ -213,12 +231,15 @@ def _backoff(values: tuple[int, ...], failure_count: int) -> int:
 
 
 def _leased_item(db: Session, claim: ClaimedScanItem) -> ScanJobItem | None:
+    now = datetime.datetime.utcnow()
     return (
         db.query(ScanJobItem)
         .filter(
             ScanJobItem.id == claim.item_id,
             ScanJobItem.status == "processing",
             ScanJobItem.lease_token == claim.lease_token,
+            ScanJobItem.lease_expires_at.is_not(None),
+            ScanJobItem.lease_expires_at > now,
         )
         .with_for_update()
         .first()
@@ -226,12 +247,15 @@ def _leased_item(db: Session, claim: ClaimedScanItem) -> ScanJobItem | None:
 
 
 def _leased_items(db: Session, claim: ClaimedScanItem) -> list[ScanJobItem]:
+    now = datetime.datetime.utcnow()
     return (
         db.query(ScanJobItem)
         .filter(
             ScanJobItem.id.in_(claim.all_item_ids),
             ScanJobItem.status == "processing",
             ScanJobItem.lease_token == claim.lease_token,
+            ScanJobItem.lease_expires_at.is_not(None),
+            ScanJobItem.lease_expires_at > now,
         )
         .order_by(ScanJobItem.position.asc())
         .with_for_update()
@@ -362,6 +386,134 @@ def fail_claim(
     return True
 
 
+def _load_recognition_cache(
+    db: Session,
+    item_ids: list[int] | tuple[int, ...],
+    lease_token: str | None,
+) -> dict[int, dict]:
+    """Load parsed recognition only while this worker still owns the lease."""
+    if not item_ids or not lease_token:
+        return {}
+    now = datetime.datetime.utcnow()
+    rows = (
+        db.query(ScanJobItem.id, ScanJobItem.recognized)
+        .filter(
+            ScanJobItem.id.in_(item_ids),
+            ScanJobItem.status == "processing",
+            ScanJobItem.lease_token == lease_token,
+            ScanJobItem.lease_expires_at.is_not(None),
+            ScanJobItem.lease_expires_at > now,
+        )
+        .all()
+    )
+    db.rollback()
+    return {
+        row.id: dict(row.recognized)
+        for row in rows
+        if isinstance(row.recognized, dict)
+    }
+
+
+def _persist_recognition_cache(
+    recognized_by_item_id: dict[int, dict],
+    lease_token: str | None,
+) -> None:
+    """Persist paid extraction results without committing the processor session."""
+    if not recognized_by_item_id or not lease_token:
+        return
+    from database import SessionLocal
+
+    cache_db = SessionLocal()
+    try:
+        now = datetime.datetime.utcnow()
+        rows = (
+            cache_db.query(ScanJobItem)
+            .filter(
+                ScanJobItem.id.in_(recognized_by_item_id),
+                ScanJobItem.status == "processing",
+                ScanJobItem.lease_token == lease_token,
+                ScanJobItem.lease_expires_at.is_not(None),
+                ScanJobItem.lease_expires_at > now,
+            )
+            .with_for_update()
+            .all()
+        )
+        if {row.id for row in rows} != set(recognized_by_item_id):
+            cache_db.rollback()
+            raise RuntimeError("The scan lease expired before recognition could be saved.")
+        for row in rows:
+            row.recognized = recognized_by_item_id[row.id]
+            row.updated_at = now
+        cache_db.commit()
+    finally:
+        cache_db.close()
+
+
+def _clear_recognition_cache(claim: ClaimedScanItem) -> None:
+    """Discard a cache unless the failure is specifically catalogue-related."""
+    from database import SessionLocal
+
+    cache_db = SessionLocal()
+    try:
+        now = datetime.datetime.utcnow()
+        (
+            cache_db.query(ScanJobItem)
+            .filter(
+                ScanJobItem.id.in_(claim.all_item_ids),
+                ScanJobItem.status == "processing",
+                ScanJobItem.lease_token == claim.lease_token,
+                ScanJobItem.lease_expires_at.is_not(None),
+                ScanJobItem.lease_expires_at > now,
+            )
+            .update(
+                {ScanJobItem.recognized: None},
+                synchronize_session=False,
+            )
+        )
+        cache_db.commit()
+    finally:
+        cache_db.close()
+
+async def _local_scan(
+    db: Session,
+    user_id: int,
+    image_bytes: bytes,
+    *,
+    job_id: int | None = None,
+    item_id: int | None = None,
+) -> dict:
+    """Recognize one already-sanitized photo offline, with no provider involved.
+
+    Always traced as a single scan: offline matching has no composite mode, so
+    even a photo staged as part of a group is recognized on its own.
+    """
+    from api.recognize_local import recognize_sanitized_card_locally
+    from services.scan_trace import create_scan_trace
+
+    trace = create_scan_trace(
+        db,
+        user_id,
+        mode="single",
+        job_id=job_id,
+        item_id=item_id,
+        filename="sanitized-scan.jpg",
+        provider=LOCAL_SCANNER_PROVIDER,
+        model=LOCAL_SCANNER_MODEL,
+    )
+    trace.set_image(image_bytes)
+    try:
+        result = await recognize_sanitized_card_locally(db, image_bytes)
+    except Exception as exc:
+        trace.record_error(str(getattr(exc, "detail", exc)))
+        raise
+    else:
+        trace.record_candidates(result.get("matches") or [])
+        trace.record_decision(result.get("_identity_decision") or "local_shortlist")
+        return result
+    finally:
+        trace.save()
+
+
 async def default_scan_processor(
     db: Session,
     user_id: int,
@@ -370,16 +522,29 @@ async def default_scan_processor(
     *,
     job_id: int | None = None,
     item_id: int | None = None,
+    lease_token: str | None = None,
+    reuse_recognition_cache: bool = False,
 ) -> dict:
     """Reuse the proven single-card scanner path with background priority."""
-    from api.recognize import recognize_sanitized_card
-    from services.scan_providers import get_provider
+    from api.recognize import match_card_info, recognize_sanitized_card
+    from services.scan_providers import get_provider, require_scanner_capability_mode
     from services.scan_trace import create_scan_trace
 
     user = db.get(User, user_id)
     if user is None or not user.is_active:
         raise PermanentScanError("The scan owner is no longer an active user.")
+    if local_scanner_enabled(db, user_id):
+        return await _local_scan(
+            db, user_id, image_bytes, job_id=job_id, item_id=item_id
+        )
     provider = get_provider(db, user_id)
+    require_scanner_capability_mode(db, user_id, provider.name, provider.model())
+    api_key = provider.credential(db, user_id)
+    if provider.requires_credential() and not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=provider.missing_credential_message(),
+        )
     trace = create_scan_trace(
         db,
         user_id,
@@ -391,7 +556,23 @@ async def default_scan_processor(
         model=provider.model(),
     )
     trace.set_image(image_bytes)
+    cache = _load_recognition_cache(
+        db,
+        [item_id] if item_id is not None and reuse_recognition_cache else [],
+        lease_token,
+    )
+    cached_card_info = cache.get(item_id) if item_id is not None else None
     try:
+        if cached_card_info is not None:
+            trace.record_cached_extraction(cached_card_info)
+            return await match_card_info(
+                db,
+                cached_card_info,
+                allow_visual_verification=False,
+                photo_bytes=image_bytes,
+                trace=trace,
+                prewarm_candidates=True,
+            )
         # Only Gemini has a shared per-key budget to protect; other providers get
         # a no-op scope rather than queueing behind Gemini's limiter.
         with provider.rate_limit_scope("background"):
@@ -401,12 +582,58 @@ async def default_scan_processor(
                 image_bytes,
                 content_type,
                 trace=trace,
+                prewarm_candidates=True,
+                on_recognized=(
+                    lambda card_info: _persist_recognition_cache(
+                        {item_id: card_info}, lease_token
+                    )
+                    if item_id is not None
+                    else None
+                ),
             )
     except Exception as exc:
         trace.record_error(str(getattr(exc, "detail", exc)))
         raise
     finally:
         trace.save()
+
+
+async def _local_composite_scan(
+    db: Session,
+    user_id: int,
+    images: list[bytes],
+    *,
+    job_id: int | None = None,
+    item_ids: list[int] | tuple[int, ...] | None = None,
+) -> list[dict | None]:
+    """Recognize a staged group offline, one photo at a time.
+
+    Compositing several cards into one frame exists to spend a single provider
+    call on four photos. Offline matching has no such cost, and a frame holding
+    more than one card is precisely the case its card detection cannot box --
+    so each photo is matched separately and every position comes back with its
+    own shortlist. A photo the fingerprinter cannot read is returned as None so
+    only that position falls back to an individual scan, rather than failing its
+    three companions with it.
+    """
+    trace_item_ids = list(item_ids or [])
+    results: list[dict | None] = []
+    for position, image in enumerate(images):
+        try:
+            results.append(await _local_scan(
+                db,
+                user_id,
+                image,
+                job_id=job_id,
+                item_id=(
+                    trace_item_ids[position] if position < len(trace_item_ids) else None
+                ),
+            ))
+        except HTTPException as exc:
+            if exc.status_code != 400:
+                raise
+            results.append(None)
+    return results
 
 
 async def default_composite_processor(
@@ -417,6 +644,8 @@ async def default_composite_processor(
     *,
     job_id: int | None = None,
     item_ids: list[int] | tuple[int, ...] | None = None,
+    lease_token: str | None = None,
+    recognition_cache_item_ids: list[int] | tuple[int, ...] | None = None,
 ) -> list[dict | None]:
     """Recognize a small grid and flag unclear positions for individual work."""
     from api.recognize import (
@@ -436,6 +665,10 @@ async def default_composite_processor(
     user = db.get(User, user_id)
     if user is None or not user.is_active:
         raise PermanentScanError("The scan owner is no longer an active user.")
+    if local_scanner_enabled(db, user_id):
+        return await _local_composite_scan(
+            db, user_id, images, job_id=job_id, item_ids=item_ids
+        )
     provider = get_provider(db, user_id)
     request_timeout_seconds = resolve_scanner_request_timeout(
         db, user_id, provider.name
@@ -480,43 +713,66 @@ async def default_composite_processor(
         trace.set_image(image)
 
     try:
-        with provider.rate_limit_scope("background"):
-            try:
-                recognized_by_position = await recognize_composite_card_info(
-                    api_key,
-                    build_composite(images),
-                    len(images),
-                    traces=traces,
-                    provider=provider,
-                    request_timeout_seconds=request_timeout_seconds,
-                )
-            except CompositeRecognitionError as exc:
-                for trace in traces:
-                    trace.record_error(str(exc))
-                recognized_by_position = {}
+        cache = _load_recognition_cache(
+            db,
+            list(recognition_cache_item_ids or []),
+            lease_token,
+        )
+        recognized_by_position = {
+            position: cache[item_id]
+            for position, item_id in enumerate(trace_item_ids)
+            if item_id in cache
+        }
+        if recognized_by_position:
+            for position, card_info in recognized_by_position.items():
+                traces[position].record_cached_extraction(card_info)
+        else:
+            with provider.rate_limit_scope("background"):
+                try:
+                    recognized_by_position = await recognize_composite_card_info(
+                        api_key,
+                        build_composite(images),
+                        len(images),
+                        traces=traces,
+                        provider=provider,
+                        request_timeout_seconds=request_timeout_seconds,
+                    )
+                except CompositeRecognitionError as exc:
+                    for trace in traces:
+                        trace.record_error(str(exc))
+                    recognized_by_position = {}
+            _persist_recognition_cache(
+                {
+                    trace_item_ids[position]: card_info
+                    for position, card_info in recognized_by_position.items()
+                    if position < len(trace_item_ids)
+                },
+                lease_token,
+            )
 
-            results: list[dict | None] = []
-            for position in range(len(images)):
-                card_info = recognized_by_position.get(position)
-                has_name = bool(str((card_info or {}).get("name") or "").strip())
-                if not has_name:
-                    traces[position].record_decision("individual_fallback")
-                    results.append(None)
-                    continue
-                result = await match_composite_card_info(
-                    db,
-                    card_info,
-                    photo_bytes=images[position],
-                    trace=traces[position],
-                )
-                if not bool(result.get("_identity_confident")):
-                    traces[position].record_decision("individual_fallback")
-                results.append(
-                    result
-                    if bool(result.get("_identity_confident"))
-                    else None
-                )
-            return results
+        results: list[dict | None] = []
+        for position in range(len(images)):
+            card_info = recognized_by_position.get(position)
+            has_name = bool(str((card_info or {}).get("name") or "").strip())
+            if not has_name:
+                traces[position].record_decision("individual_fallback")
+                results.append(None)
+                continue
+            result = await match_composite_card_info(
+                db,
+                card_info,
+                photo_bytes=images[position],
+                trace=traces[position],
+                prewarm_candidates=True,
+            )
+            if not bool(result.get("_identity_confident")):
+                traces[position].record_decision("individual_fallback")
+            results.append(
+                result
+                if bool(result.get("_identity_confident"))
+                else None
+            )
+        return results
     except Exception as exc:
         for trace in traces:
             trace.record_error(str(getattr(exc, "detail", exc)))
@@ -572,6 +828,8 @@ async def process_claimed_scan_item(
                             content_types,
                             job_id=job_id,
                             item_ids=item_ids,
+                            lease_token=claim.lease_token,
+                            recognition_cache_item_ids=claim.recognition_cache_item_ids,
                         )
                     else:
                         results = await composite_processor(
@@ -586,6 +844,10 @@ async def process_claimed_scan_item(
                             content_types[0],
                             job_id=job_id,
                             item_id=item_ids[0],
+                            lease_token=claim.lease_token,
+                            reuse_recognition_cache=(
+                                item_ids[0] in claim.recognition_cache_item_ids
+                            ),
                         )
                     else:
                         result = await processor(
@@ -611,6 +873,17 @@ async def process_claimed_scan_item(
                 else:
                     complete_claim(db, claim, results[0])
                 return
+
+            uses_recognition_cache = (
+                composite_processor is default_composite_processor
+                if claim.composite
+                else processor is default_scan_processor
+            )
+            if (
+                uses_recognition_cache
+                and getattr(error, "retry_reason", None) != "catalogue_unavailable"
+            ):
+                _clear_recognition_cache(claim)
 
             fail_claim(
                 db,

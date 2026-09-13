@@ -17,3 +17,10 @@ alembic==1.13.1
 bcrypt
 python-jose[cryptography]
 slowapi==0.1.9
+
+# Optional: the offline scanner's accurate path (services/card_embedding.py).
+# Deliberately NOT installed by default -- it is ~70MB of site-packages against
+# a 707MB image, and the perceptual-hash scanner works without it. Install it
+# and point LOCAL_SCANNER_MODEL at a DINOv2 ONNX export to turn it on; see
+# docs/ARCHITECTURE.md.
+#   onnxruntime>=1.17

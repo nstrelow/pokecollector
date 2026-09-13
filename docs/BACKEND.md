@@ -41,8 +41,9 @@ FastAPI app entry point: `backend/main.py`.
 | POST | `/api/cards/recognize` | Card recognition through the user's configured vision provider |
 | POST | `/api/cards/recognize/jobs` | Sanitize and enqueue up to 50 persistent scan photos |
 | GET | `/api/cards/recognize/jobs` | Current user's active/actionable scan jobs |
-| GET | `/api/cards/recognize/jobs/{job_id}` | User-scoped scan job and review items |
+| GET | `/api/cards/recognize/jobs/{job_id}` | User-scoped scan job and review items, resolved items included (collapsed row) |
 | GET | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/image` | Private sanitized review photo |
+| GET | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/candidates/{index}/image` | A candidate's full-resolution artwork, served from the shared image cache |
 | POST | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/resolve` | Confirm/dismiss an item and delete its queued photo |
 | POST | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/retry` | Retry one reviewable item individually |
 | DELETE | `/api/cards/recognize/jobs/{job_id}` | Delete a job and its queued photos |
@@ -303,10 +304,92 @@ Environment controls:
 1. Uploads are bounded, sanitized, orientation-normalized JPEGs with metadata removed.
 2. Two-to-four batch-eligible photos share one indexed composite provider request. Any missing or uncertain position is retried from its original individual photo.
 3. The selected provider extracts name, split local/total collector number, printed set code, regulation mark, type, HP, language, and artist; uncertain small text stays `null`.
-4. TCGdex candidates are ranked deterministically by local number, language, printed total, set code, regulation mark, artist, and HP. Missing evidence is neutral and contradictions are negative.
+4. Candidates are found by querying the locally synced `cards` table and ranked deterministically by local number, language, printed total, set code, regulation mark, artist, and HP. Missing evidence is neutral and contradictions are negative. Broad substring rows from either the local catalogue or live TCGdex are retained only when their complete names match after accent, case, and whitespace normalization, so an unrelated containing name or different card suffix cannot become a confident number match. A (language, name) search pair falls back to one live TCGdex call (`_api_search_fallback` in `backend/api/recognize.py`) when it has no name-compatible local rows, or when a collector number was recognized but none of those rows has that number. The second condition matters when a newly released printing reuses an existing card name before the local sync reaches it. The fallback result is used for that one scan only and is never persisted to `cards`. When every required live fallback is unavailable and no local candidate exists, the scan reports a transient catalogue outage instead of a false "no matches" result. Queued scans save the parsed vision result before matching and reuse it for catalogue-outage retries, so recovery does not repeat the paid extraction. Scan traces tag each search-pair result's `source` as `local` or `api_fallback`, and cached retries mark the extraction source as `queue_cache`.
 5. If metadata is inconclusive, conservative pHash can accept a close, clearly separated visual winner without another provider call. It never overrides known contradictions.
 6. Individual scans may use the same provider's visual comparison when pHash abstains; composite scans fall back to individual recognition instead.
-7. Queue results remain reviewable after restarts. Confirming/dismissing an item deletes its queued photo; unreviewed jobs expire after 14 days.
+7. Queue results remain reviewable after restarts. Confirming and adding a candidate uses one row-locked database transaction so concurrent tabs cannot increment the collection twice; confirming/dismissing then deletes the queued photo. Unreviewed jobs expire after 14 days.
+
+### Offline recognition ("Scanner v2 (Beta)")
+
+`backend/api/recognize_local.py` is the other route: it matches a photo against
+locally stored artwork and never contacts a provider. It is per-user, off by
+default (`local_scanner_enabled`), and when on, `services/scan_queue.py` routes
+that user's scans to it before any provider work happens — no credential, no
+capability probe, no recognition cache.
+
+Two rankers, and which one ran is reported as `_ranked_by` on every answer:
+
+- **Perceptual hash** (`services/card_fingerprint.py`) — a 64-bit DCT hash of
+  the artwork in `cards.image_phash`, kept current by an hourly backfill.
+  Always available; no dependency beyond numpy and Pillow.
+- **Dense embedding** (`services/card_embedding.py`) — optional, enabled only
+  by setting `LOCAL_SCANNER_MODEL` to a DINOv2 ONNX export, which also installs
+  onnxruntime at build time. Stored in `cards.image_embedding`, whitened to 256
+  dimensions at index load, and fused with the hash by a per-query z-score sum.
+  The hash is kept because two language printings of one card are the same
+  picture to the embedding and different renders to the hash.
+
+A third signal is not a ranker and is listed separately because it does not
+score artwork at all:
+
+- **Printed collector number** (`services/card_ocr.py`) — optional, enabled by
+  `LOCAL_SCANNER_OCR=1`, which at build time also installs
+  `rapidocr-onnxruntime` and `opencv-python-headless` (+186MB). It reads the
+  `NNN/TTT` from the bottom of the card and resolves it against
+  `sets.printed_total`, joined on `(tcg_set_id, lang)` — deliberately not
+  against a set code, which the recogniser reads badly and consistently
+  (`DCBL` for a printed `PBL`). A (number, printed total) pair identifies a
+  single artwork 64.7% of the time and three or fewer 94% of the time.
+
+  The merge in `_apply_printed_number` is **additive only**: it promotes and
+  appends candidates and can never remove one the artwork search found, since
+  an OCR misread is at least as likely as a wrong image match. Because it can
+  reach cards with no artwork at all — 22% of the catalogue, absent from the
+  index entirely — those rows are fetched from the database rather than the
+  index snapshot. When it reorders anything, the answer stops claiming
+  confidence, because the badge's calibration never saw this evidence. Results
+  carry `_printed_numbers`.
+
+  What it buys, A/B'd on one build with the flag as the only variable: on the 24
+  real photos whose answer is known, the right card went from 17 to 22 at rank 1
+  and from 22 to 24 in the shortlist. One photo regressed — a correctly read
+  `19/84` also names a Japanese set with 84 cards, and the wrong one led — which
+  is the cost of a number that identifies more than one card. A further 21 of
+  the 87 photos now answer with a card that has no artwork at all, unreachable
+  by image at any ranker quality; only one of those is ground-truthed.
+
+  It is not free: measured through the deployed endpoint on 87 real photos the
+  median scan goes to ~4.3s against ~25ms for the whole fingerprint pipeline,
+  and there is no cheap gate to hide it behind, since the embedding path never
+  claims confidence anyway. A photo that reads a number is faster than one that
+  does not, because failure pays for every framing. On the 25 of those photos
+  with a known printed number it read 22 correctly, 2 not at all, and **1
+  incorrectly** — `010/064` as `70/64`, which another set really prints, so
+  neither the plausibility check nor the catalogue lookup rejected it and it
+  promoted the wrong card. Most misreads name nothing and disappear quietly;
+  that one did not, which is why the merge only ever reorders.
+  `LOCAL_SCANNER_MODEL_THREADS` caps its onnxruntime pool as well — shared on
+  purpose, as both are onnxruntime competing for the same cores.
+
+A row without an embedding is ranked on its hash alone, so the two coexist
+while a backfill catches up. If the model is configured but a photo produces no
+views, the scan degrades to hash-only and says so in the log and in
+`_ranked_by`, because the two rankings are far apart in accuracy.
+
+The shortlist holds twelve distinct **artworks**, not twelve rows: other
+language printings of one card are grouped onto its tile in `_other_printings`
+rather than spending a slot each. Confidence is judged on the ungrouped
+ranking, so collapsing a German and an English printing cannot manufacture a
+margin the hash never had.
+
+Known limits, all measured and documented in the benchmark notes: the scanner
+cannot separate two language printings by artwork alone; roughly a fifth of the
+catalogue has no artwork and can never be matched by image; and a photo of such
+a card is still answered confidently rather than refused, because no score in
+the system distinguishes "absent" from "hard". The printed-number reader above
+is the only signal that addresses the last two, and only when it is enabled and
+the number happens to be legible — on an 87-photo real-world set it reads a
+number on 75 of them.
 
 Provider error handling:
 
@@ -327,7 +410,8 @@ Additional matching behavior:
 
 - Name suffixes like `EX`, `GX`, `V`, `VMAX`, `VSTAR`, `TAG TEAM`, `BREAK`, and `LV.X` are stripped before search
 - Search may fall back from detected card language to English
-- Result payload includes recognized metadata and candidate matches
+- Result payload includes recognized metadata and candidate matches, each flagged with `printed_total_mismatch` when its printed set total contradicts the recognized card (the same signal the ranker already uses to demote it)
+- `backend/services/scan_candidate_images.py` caches each unresolved review's full-resolution candidate artwork in the shared `ImageCache` table (see `backend/api/images.py`); `match_card_info` fires a bounded, non-blocking prewarm of the top-ranked candidates so the review UI's first look is usually a local cache read. Fetches accept only image responses from the TCGdex HTTPS CDN, and this feature's cache entries are capped.
 
 ### Scanner diagnostics
 

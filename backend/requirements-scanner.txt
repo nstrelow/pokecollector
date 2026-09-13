@@ -1,0 +1,9 @@
+# The offline scanner's accurate path (services/card_embedding.py).
+#
+# Installed only when the image is built with INSTALL_SCANNER_MODEL set, which
+# docker-compose derives from LOCAL_SCANNER_MODEL -- so the one setting that
+# points at a model is also the one that pulls in the runtime to read it, and
+# an installation that has not opted in never sees either.
+#
+# ~70MB of site-packages against a 707MB image. MIT licensed.
+onnxruntime>=1.17,<2

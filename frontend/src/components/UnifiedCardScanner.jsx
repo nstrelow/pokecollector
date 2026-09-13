@@ -6,7 +6,8 @@ import toast from 'react-hot-toast'
 
 import { enqueueScanJob, getScannerConfiguration } from '../api/client'
 import { useSettings } from '../contexts/SettingsContext'
-import { isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
+import { isUploadTimeout } from '../utils/scannerTimeout'
+import { downscaleAllForUpload, isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
 import ConfirmDialog from './ui/ConfirmDialog'
 import Modal from './ui/Modal'
 
@@ -45,12 +46,16 @@ export default function UnifiedCardScanner({ isOpen, onClose }) {
   const cameraRef = useRef()
   const galleryRef = useRef()
   const stagedFilesRef = useRef([])
-  const { t } = useSettings()
+  const { t, settings } = useSettings()
   const navigate = useNavigate()
+  // With "Scanner v2 (Beta)" on, the queue matches every photo against the
+  // local fingerprint index and never reaches a provider — so the provider's
+  // capability warning below is about something that will not run.
+  const localScanner = settings?.local_scanner_enabled === 'true'
   const { data: scannerConfiguration } = useQuery({
     queryKey: ['scanner-configuration'],
     queryFn: getScannerConfiguration,
-    enabled: isOpen,
+    enabled: isOpen && !localScanner,
   })
 
   useEffect(() => {
@@ -151,15 +156,21 @@ export default function UnifiedCardScanner({ isOpen, onClose }) {
       const individualPositions = stagedFiles
         .map((item, position) => item.individual ? position : null)
         .filter(position => position !== null)
+      // Shrunk here rather than at staging, so photos the user removes again
+      // never cost the work.
       const job = await enqueueScanJob(
-        stagedFiles.map(item => item.file),
+        await downscaleAllForUpload(stagedFiles.map(item => item.file)),
         individualPositions,
       )
       clearFiles()
       onClose?.()
       navigate(`/scans/${job.id}`)
     } catch (error) {
-      toast.error(error?.response?.data?.detail || t('scanner.batchSubmitFailed'))
+      toast.error(
+        isUploadTimeout(error)
+          ? t('scanner.batchUploadTimeout')
+          : error?.response?.data?.detail || t('scanner.batchSubmitFailed'),
+      )
     } finally {
       setSubmitting(false)
     }
@@ -176,7 +187,13 @@ export default function UnifiedCardScanner({ isOpen, onClose }) {
       >
         <div className="space-y-4 p-4 sm:p-5">
           <p className="text-sm text-text-secondary">{t('scanner.subtitle')}</p>
-          {scannerConfiguration?.visual_verification === 'disabled' && (
+          {localScanner && (
+            <div role="status" className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2.5">
+              <p className="text-xs font-semibold text-text-primary">{t('settings.scannerLocalTitle')}</p>
+              <p className="mt-1 text-[11px] text-text-secondary">{t('scanner.localModeNotice')}</p>
+            </div>
+          )}
+          {!localScanner && scannerConfiguration?.visual_verification === 'disabled' && (
             <div role="status" className="rounded-xl border border-brand-yellow/35 bg-brand-yellow/10 px-3 py-2.5">
               <p className="text-xs font-semibold text-brand-yellow">{t('settings.scannerDegradedTitle')}</p>
               <p className="mt-1 text-[11px] text-text-secondary">{t('settings.scannerDegradedWarning')}</p>

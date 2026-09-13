@@ -10,6 +10,35 @@ scheduler = BackgroundScheduler()
 _DEFAULT_FULL_SYNC_DAYS = 5
 _DEFAULT_PRICE_SYNC_MINUTES = 30
 
+# Offline-recognition fingerprints. At 5 req/s a 2,000-card batch is ~7 minutes
+# of CDN time IF every download succeeds on the first attempt. It does not
+# follow that a 45k catalogue clears in a day: `download_image` retries 4 times
+# at a 30s timeout with 1+2+4s of backoff, so a card that is simply unreachable
+# costs up to ~127s, and 2,000 of those over 4 workers is 17.6 hours. That is
+# why the run has a wall-clock budget as well as a row limit -- and why an
+# honest estimate is "a healthy catalogue clears in about a day, a sick one
+# takes as long as it takes, a budget-limited batch at a time".
+#
+# The budget is well under the hour between runs, so a healthy run is always
+# finished by the time the next one is due, and max_instances=1 never has
+# reason to skip an overlapping start.
+#
+# misfire_grace_time is set explicitly rather than left at APScheduler's
+# 1-second default. That default means a late run isn't queued at all: if the
+# scheduler's check for this job lands more than a second after its due time
+# (a slow prior run, GIL contention, the process briefly stalled), APScheduler
+# logs it as misfired and drops it outright, and the job simply waits for its
+# next hourly slot. coalesce=True never enters into it at 1 second -- there is
+# nothing to coalesce when a miss is never allowed to accumulate. The grace
+# period below is what actually gives coalesce=True something to do: if the
+# process is unresponsive for a few minutes, one or more due firings can build
+# up within it, and coalesce=True runs them once instead of back-to-back.
+_FINGERPRINT_BATCH_LIMIT = 2000
+_FINGERPRINT_RPS = 5.0
+_FINGERPRINT_INTERVAL_HOURS = 1
+_FINGERPRINT_TIME_BUDGET_SECONDS = 40 * 60.0
+_FINGERPRINT_MISFIRE_GRACE_SECONDS = 10 * 60
+
 
 def _get_full_sync_interval_days() -> int:
     """Read full sync interval from DB settings."""
@@ -156,6 +185,52 @@ def run_pokedex_metadata_backfill():
         db.close()
 
 
+def run_fingerprint_backfill():
+    """Keep cards.image_phash populated as the catalogue changes.
+
+    Without this, offline recognition coverage only ever decays: a newly synced
+    card has no fingerprint at all, and a card whose artwork URL rotates has its
+    old one dropped. This job picks up whatever is outstanding -- including rows
+    whose stored fingerprint no longer matches their current artwork URL, which
+    is how a writer that forgot to clear one gets repaired -- a bounded batch at
+    a time, paced politely against TCGdex.
+
+    Bounded by rows AND by wall clock, and it gives up early if the CDN is
+    plainly not answering. The run is meant to finish inside the scheduler's
+    interval; see `_FINGERPRINT_MISFIRE_GRACE_SECONDS` above for what actually
+    happens on the rare run that does not.
+    """
+    from database import SessionLocal
+    from services.fingerprint_backfill import run_backfill
+
+    db = SessionLocal()
+    try:
+        result = run_backfill(
+            db,
+            limit=_FINGERPRINT_BATCH_LIMIT,
+            rps=_FINGERPRINT_RPS,
+            time_budget=_FINGERPRINT_TIME_BUDGET_SECONDS,
+        )
+        # Always logged, even when `considered` is 0. A catalogue-wide outage
+        # (e.g. a CDN 403 wave) can make `pending_cards()` legitimately return
+        # nothing every run -- every row already carries a negative-cache
+        # provenance -- and that must not look identical in the logs to a
+        # healthy, fully-covered catalogue idling. Suppressing this line
+        # whenever there was nothing to do is exactly what made a wiped queue
+        # silent.
+        logger.info(
+            "Fingerprint backfill: considered=%s attempted=%s stored=%s "
+            "skipped=%s cleared=%s placeholders=%s stopped_early=%s",
+            result["considered"], result["attempted"], result["stored"],
+            result["skipped"], result["cleared"], result["placeholders"],
+            result["stopped_early"],
+        )
+    except Exception:
+        logger.exception("Fingerprint backfill failed")
+    finally:
+        db.close()
+
+
 # Keep legacy alias
 def run_sync():
     """Legacy alias for run_full_sync."""
@@ -214,6 +289,20 @@ def start_scheduler():
             name="Persistent Scan Queue",
             replace_existing=True,
             next_run_time=now_utc + datetime.timedelta(seconds=45),
+        )
+
+        # Deliberately not at startup: this downloads images, so it must not sit
+        # in front of the app becoming available.
+        scheduler.add_job(
+            run_fingerprint_backfill,
+            trigger=IntervalTrigger(hours=_FINGERPRINT_INTERVAL_HOURS),
+            id="fingerprint_backfill_job",
+            name="Card Image Fingerprints",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            misfire_grace_time=_FINGERPRINT_MISFIRE_GRACE_SECONDS,
+            next_run_time=now_utc + datetime.timedelta(minutes=10),
         )
 
         if needs_pokedex_backfill:

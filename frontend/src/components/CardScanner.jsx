@@ -2,9 +2,10 @@ import { useEffect, useState, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { Camera, Upload, ImagePlus, Trash2, X, Check, Loader2, RefreshCw, Plus } from 'lucide-react'
-import { recognizeCard, addToCollection, enqueueScanJob, getScannerConfiguration, uploadCollectionItemPhoto } from '../api/client'
+import { recognizeCard, recognizeCardLocally, addToCollection, enqueueScanJob, getScannerConfiguration, uploadCollectionItemPhoto } from '../api/client'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSettings } from '../contexts/SettingsContext'
+import { isUploadTimeout } from '../utils/scannerTimeout'
 import { useConfirmDialog } from '../contexts/ConfirmDialogContext'
 import toast from 'react-hot-toast'
 import { CARD_VARIANTS, getDefaultVariant } from '../utils/cardVariants'
@@ -13,9 +14,11 @@ import { invalidateCardState, invalidateTcgdexFilterLanguages } from '../utils/q
 import MoneyInput from './MoneyInput'
 import { parseMoneyInputValue } from '../utils/moneyInput'
 import { CardDisplay } from './card-system'
+import { CandidateConfidenceBadge, CandidatePrintingPicker } from './ScanReview'
 import { tcgdexLanguageLabel } from '../utils/tcgdexLanguages'
-import { isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
+import { downscaleAllForUpload, downscaleForUpload, isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
 import { hasCatalogueImage } from '../utils/imageUrl'
+import { useDialogBehavior } from './ui/dialogBehavior'
 
 export async function attachScanFallbackPhoto({ created, match, getPhoto, uploadPhoto = uploadCollectionItemPhoto }) {
   const createdCard = created?.card
@@ -39,7 +42,15 @@ export async function attachScanFallbackPhoto({ created, match, getPhoto, upload
 // collection item exists, and only matters for cards TCGdex has no scan of —
 // and only when the matched card has no catalogue artwork and no saved fallback.
 // A failed photo attach must never block adding the card itself.
-export function ScanAddModal({ match, defaultLang, getPhoto, onClose, onAdded }) {
+export function ScanAddModal({
+  match,
+  defaultLang,
+  getPhoto,
+  onClose,
+  onAdded,
+  addCard,
+  preservePhotoBeforeAdd = false,
+}) {
   const { t, exchangeRate, exchangeRateReady } = useSettings()
   const [quantity, setQuantity] = useState(1)
   const [condition, setCondition] = useState('NM')
@@ -48,27 +59,47 @@ export function ScanAddModal({ match, defaultLang, getPhoto, onClose, onAdded })
   const [purchasePrice, setPurchasePrice] = useState('')
   const [adding, setAdding] = useState(false)
   const queryClient = useQueryClient()
+  const { dialogRef, onDialogKeyDown } = useDialogBehavior(true, onClose)
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = previousOverflow }
+  }, [])
 
   const handleAdd = async () => {
     if (!exchangeRateReady) return
     setAdding(true)
     try {
-      const { data: created } = await addToCollection({
+      const payload = {
         card_id: match.id,
         quantity,
         condition,
         variant,
         lang,
         purchase_price: parseMoneyInputValue(purchasePrice, exchangeRate),
-      })
+      }
+      // Resolving a queued scan deletes its private source photo. Retain the
+      // Blob before an atomic add+resolve so missing catalogue artwork can
+      // still receive the same best-effort fallback photo as direct scans.
+      const retainedPhoto = preservePhotoBeforeAdd && getPhoto
+        ? await getPhoto().catch(() => null)
+        : null
+      const created = addCard
+        ? await addCard(payload)
+        : (await addToCollection(payload)).data
       // Never overwrite a photo the item already has — grouping into an
       // existing row (same card/variant/condition/lang) is common, and a
       // second scan of the same card is not necessarily a better photo.
-      await attachScanFallbackPhoto({ created, match, getPhoto })
+      await attachScanFallbackPhoto({
+        created,
+        match,
+        getPhoto: retainedPhoto ? () => Promise.resolve(retainedPhoto) : getPhoto,
+      })
       invalidateCardState(queryClient)
       invalidateTcgdexFilterLanguages(queryClient)
       toast.success(`${match.name} ${t('scanner.addedToCollection')}!`)
-      onAdded && onAdded()
+      onAdded && onAdded(created)
       onClose()
     } catch (err) {
       const msg = err?.response?.data?.detail || t('card.addFailed')
@@ -80,6 +111,12 @@ export function ScanAddModal({ match, defaultLang, getPhoto, onClose, onAdded })
 
   return createPortal(
     <div
+      ref={dialogRef}
+      role="dialog"
+      aria-modal="true"
+      aria-label={t('scanner.addToCollection')}
+      tabIndex={-1}
+      onKeyDown={onDialogKeyDown}
       className="fixed inset-0 z-[300] flex items-end justify-center bg-black/80 p-2 backdrop-blur-sm sm:items-center sm:p-3"
       onClick={onClose}
     >
@@ -190,13 +227,18 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
   const scanPreviewRef = useRef(null)
   const scannedFileRef = useRef(null)
   const stagedFilesRef = useRef([])
-  const { t } = useSettings()
+  const { t, settings } = useSettings()
   const confirmDialog = useConfirmDialog()
   const navigate = useNavigate()
+  // "Scanner v2 (Beta)": match against the local fingerprint index instead of
+  // calling a vision provider. Both endpoints answer in the same shape.
+  const localScanner = settings?.local_scanner_enabled === 'true'
+  // Only the provider path has a request timeout to configure, so don't fetch
+  // the provider configuration for a scan that will never reach a provider.
   const { data: scannerConfiguration } = useQuery({
     queryKey: ['scanner-configuration'],
     queryFn: getScannerConfiguration,
-    enabled: isOpen,
+    enabled: isOpen && !localScanner,
   })
 
   useEffect(() => {
@@ -220,11 +262,13 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
     setScanPreviewUrl(scanPreviewRef.current)
     scannedFileRef.current = file
     setPhase('loading')
+    // Shrink to the bound the backend applies anyway. Best effort: on any
+    // failure this is the original file, which is what used to be sent.
+    file = await downscaleForUpload(file)
     try {
-      const data = await recognizeCard(
-        file,
-        scannerConfiguration?.request_timeout_seconds,
-      )
+      const data = localScanner
+        ? await recognizeCardLocally(file)
+        : await recognizeCard(file, scannerConfiguration?.request_timeout_seconds)
       setResults(data)
       setSelectedMatch(data.matches?.[0] || null)
       setPhase('results')
@@ -302,14 +346,21 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
     if (!stagedFiles.length || submittingBatch) return
     setSubmittingBatch(true)
     try {
-      const job = await enqueueScanJob(stagedFiles.map(item => item.file))
+      // Shrunk here rather than at staging, so photos the user removes again
+      // never cost the work.
+      const job = await enqueueScanJob(
+        await downscaleAllForUpload(stagedFiles.map(item => item.file)))
       releaseStagedFiles()
       setStagedFiles([])
       setPhase('capture')
       onClose?.()
       navigate(`/scans/${job.id}`)
     } catch (error) {
-      toast.error(error?.response?.data?.detail || t('scanner.batchSubmitFailed'))
+      toast.error(
+        isUploadTimeout(error)
+          ? t('scanner.batchUploadTimeout')
+          : error?.response?.data?.detail || t('scanner.batchSubmitFailed'),
+      )
     } finally {
       setSubmittingBatch(false)
     }
@@ -373,7 +424,7 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
             </button>
 
             <p className="text-[11px] text-text-muted text-center max-w-xs">
-              {t('scanner.aiHint')}
+              {localScanner ? t('scanner.localHint') : t('scanner.aiHint')}
             </p>
           </div>
         )}
@@ -501,20 +552,40 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
                     </p>
                     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                       {results.matches.map(match => {
-                        const matchLang = match.lang || match._lang || 'en'
-                        const selected = selectedMatch?.id === match.id
+                        // One tile per artwork; the other language printings of
+                        // the same card are grouped onto it rather than taking
+                        // slots of their own. Whichever the user last picked on
+                        // this tile is the one it shows.
+                        const shown = [match, ...(match._other_printings || [])]
+                          .find(option => option.id === selectedMatch?.id) || match
+                        const matchLang = shown.lang || shown._lang || 'en'
+                        const selected = selectedMatch?.id === shown.id
                           && (selectedMatch?.lang || selectedMatch?._lang || 'en') === matchLang
                         return (
-                          <CardDisplay
-                            key={`${match.id}-${matchLang}`}
-                            variant="selectable"
-                            card={match}
-                            image={match.image}
-                            languageLabel={tcgdexLanguageLabel(matchLang)}
-                            selected={selected}
-                            onClick={() => setSelectedMatch(match)}
-                            onSelect={() => setSelectedMatch(match)}
-                          />
+                          <div key={`${match.id}-${matchLang}`}>
+                            <CardDisplay
+                              variant="selectable"
+                              card={shown}
+                              image={shown.image}
+                              languageLabel={tcgdexLanguageLabel(matchLang)}
+                              selected={selected}
+                              onClick={() => setSelectedMatch(shown)}
+                              onSelect={() => setSelectedMatch(shown)}
+                              overlay={(
+                                <CandidateConfidenceBadge
+                                  level={shown._confidence}
+                                  percent={shown._match_percent}
+                                  t={t}
+                                />
+                              )}
+                            />
+                            <CandidatePrintingPicker
+                              match={match}
+                              selectedId={shown.id}
+                              onSelect={setSelectedMatch}
+                              t={t}
+                            />
+                          </div>
                         )
                       })}
                     </div>

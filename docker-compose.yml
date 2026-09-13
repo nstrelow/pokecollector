@@ -35,6 +35,12 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        # Non-empty installs onnxruntime for the offline scanner's dense
+        # embeddings. Derived from the same variable that points at the model,
+        # so there is one switch and it cannot be half-set.
+        INSTALL_SCANNER_MODEL: ${LOCAL_SCANNER_MODEL:-}
+        INSTALL_SCANNER_OCR: ${LOCAL_SCANNER_OCR:-}
     container_name: pokemon-backend
     restart: unless-stopped
     environment:
@@ -63,6 +69,14 @@ services:
       SCAN_UPLOAD_DIR: /app/data/scan-uploads
       SCAN_TRACE_DIR: ${SCAN_TRACE_DIR:-}
       SCAN_TRACE_STORAGE_DIR: /app/data/scan-traces
+      # Path to a DINOv2 ONNX export inside the container, or empty. Empty is
+      # the default and means the offline scanner ranks on its perceptual hash
+      # alone, exactly as before. See backend/services/card_embedding.py.
+      LOCAL_SCANNER_MODEL: ${LOCAL_SCANNER_MODEL:-}
+      LOCAL_SCANNER_MODEL_THREADS: ${LOCAL_SCANNER_MODEL_THREADS:-2}
+      # Reads the printed collector number, which is the only signal that
+      # reaches the ~22% of the catalogue with no artwork. Empty by default.
+      LOCAL_SCANNER_OCR: ${LOCAL_SCANNER_OCR:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -76,6 +90,9 @@ services:
       - ./data/pokedex-images:/app/data/pokedex-images
       - ./data/scan-uploads:/app/data/scan-uploads
       - ./data/scan-traces:/app/data/scan-traces
+      # Mounted rather than baked in: an 88MB model does not belong in an
+      # image layer, and this way it can be swapped without a rebuild.
+      - ./data/models:/app/data/models
     ports:
       - "${BACKEND_PORT:-8000}:8000"
 

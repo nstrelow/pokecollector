@@ -3,6 +3,7 @@ import { isPublicSharePath } from '../utils/publicRoutes'
 import {
   scannerRecognitionRequestTimeoutMs,
   scannerTestRequestTimeoutMs,
+  scanUploadTimeoutMs,
 } from '../utils/scannerTimeout'
 
 const api = axios.create({
@@ -123,6 +124,22 @@ export const recognizeCard = (imageFile, requestTimeoutSeconds) => {
   }).then(r => r.data)
 }
 
+// Offline card recognition ("Scanner v2"): matches the photo against locally
+// stored artwork fingerprints. No provider, no API key, no internet. Same
+// response shape as /cards/recognize, plus _distance and _confidence per match.
+export const recognizeCardLocally = (imageFile) => {
+  const formData = new FormData()
+  formData.append('file', imageFile)
+  return api.post('/cards/recognize/local', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then(r => r.data)
+}
+
+// Whether offline recognition can answer yet, and how much of the catalogue
+// has been fingerprinted so far.
+export const getLocalScannerStatus = () =>
+  api.get('/cards/recognize/local/status').then(r => r.data)
+
 // Persistent background card-scan queue.
 export const enqueueScanJob = (files = [], individualPositions = []) => {
   const formData = new FormData()
@@ -130,6 +147,7 @@ export const enqueueScanJob = (files = [], individualPositions = []) => {
   formData.append('individual_positions', JSON.stringify(individualPositions))
   return api.post('/cards/recognize/jobs', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: scanUploadTimeoutMs(files.length),
   }).then(r => r.data)
 }
 export const getScanJobs = () => api.get('/cards/recognize/jobs').then(r => r.data)
@@ -138,6 +156,9 @@ export const resolveScanJobItem = (jobId, itemId, cardId = null) =>
   api.post(`/cards/recognize/jobs/${jobId}/items/${itemId}/resolve`, {
     card_id: cardId,
   }).then(r => r.data)
+export const resolveAndAddScanJobItem = (jobId, itemId, data) =>
+  api.post(`/cards/recognize/jobs/${jobId}/items/${itemId}/resolve-and-add`, data)
+    .then(r => r.data)
 export const retryScanJobItem = (jobId, itemId) =>
   api.post(`/cards/recognize/jobs/${jobId}/items/${itemId}/retry`).then(r => r.data)
 export const deleteScanJob = jobId =>
@@ -150,6 +171,12 @@ export const fetchScanJobItemImage = (jobId, itemId) =>
 export const fetchScanJobItemImageBlob = (jobId, itemId) =>
   api.get(`/cards/recognize/jobs/${jobId}/items/${itemId}/image`, { responseType: 'blob' })
     .then(r => r.data)
+// Candidate artwork is served from our own cache and, like the photo above,
+// needs the bearer token — an <img src> cannot carry one — so this is fetched
+// as a blob rather than pointed at directly.
+export const fetchScanCandidateImage = (jobId, itemId, index) =>
+  api.get(`/cards/recognize/jobs/${jobId}/items/${itemId}/candidates/${index}/image`, { responseType: 'blob' })
+    .then(r => URL.createObjectURL(r.data))
 
 // Custom card migration
 export const getCustomMatches = () => api.get('/cards/custom/matches')
