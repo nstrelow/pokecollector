@@ -350,6 +350,14 @@ score artwork at all:
   confidence, because the badge's calibration never saw this evidence. Results
   carry `_printed_numbers`.
 
+  What it buys, A/B'd on one build with the flag as the only variable: on the 24
+  real photos whose answer is known, the right card went from 17 to 22 at rank 1
+  and from 22 to 24 in the shortlist. One photo regressed — a correctly read
+  `19/84` also names a Japanese set with 84 cards, and the wrong one led — which
+  is the cost of a number that identifies more than one card. A further 21 of
+  the 87 photos now answer with a card that has no artwork at all, unreachable
+  by image at any ranker quality; only one of those is ground-truthed.
+
   It is not free: measured through the deployed endpoint on 87 real photos the
   median scan goes to ~4.3s against ~25ms for the whole fingerprint pipeline,
   and there is no cheap gate to hide it behind, since the embedding path never
