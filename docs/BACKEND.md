@@ -386,8 +386,8 @@ catalogue has no artwork and can never be matched by image; and a photo of such
 a card is still answered confidently rather than refused, because no score in
 the system distinguishes "absent" from "hard". The printed-number reader above
 is the only signal that addresses the last two, and only when it is enabled and
-the number happens to be legible — on a 87-photo real-world set it resolved a
-catalogue card for 49 of them.
+the number happens to be legible — on an 87-photo real-world set it reads a
+number on 75 of them.
 
 Provider error handling:
 
