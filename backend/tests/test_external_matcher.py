@@ -985,6 +985,10 @@ class ExternalApiTests(MatcherEnvMixin, unittest.TestCase):
         with patch.dict(os.environ, {"EXTERNAL_MATCHER_URL": ""}):
             body = self.client.get("/api/settings/scanner/external").json()
         self.assertFalse(body["configured"])
+        # Same keys either way, so the frontend never branches on shape.
+        self.assertEqual(
+            set(body), {"configured", "label", "endpoint", "health", "bundle", "error"}
+        )
 
     def test_external_status_endpoint_is_admin_only_in_multi_user_mode(self):
         self.user.role = "user"
