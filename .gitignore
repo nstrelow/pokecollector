@@ -23,3 +23,4 @@ frontend/test-results-webkit/
 # Generated JWT signing key (never commit)
 backend/data/auth/
 data/auth/
+.claude/
