@@ -1,15 +1,57 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Camera, Check, HelpCircle, ImagePlus, Loader2, Trash2, Upload, X } from 'lucide-react'
+import { Camera, Check, ExternalLink, HelpCircle, ImagePlus, Loader2, Trash2, Upload, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 import { enqueueScanJob, getScannerConfiguration } from '../api/client'
 import { useSettings } from '../contexts/SettingsContext'
+import { useExternalMatcherStatus } from '../hooks/useExternalMatcherStatus'
+import {
+  SESSION_LANGS,
+  defaultSessionLang,
+  externalMatcherConfigured,
+  readSessionLang,
+  writeSessionLang,
+} from '../utils/matcherDebug'
 import { isSupportedScannerImage, SCANNER_IMAGE_ACCEPT } from '../utils/scannerImages'
 import ConfirmDialog from './ui/ConfirmDialog'
 import Modal from './ui/Modal'
 
+
+// Standalone live-camera scanner served by pokescanner (docs/POKESCANNER-PLAN.md §7).
+// Build-time: hidden unless VITE_LIVE_SCANNER_URL is set.
+const LIVE_SCANNER_URL = import.meta.env.VITE_LIVE_SCANNER_URL || ''
+
+function safeLocalStorage() {
+  try {
+    return globalThis.localStorage
+  } catch {
+    return null
+  }
+}
+
+// en/de segmented control: which language the physical cards in this batch
+// are printed in. Forwarded to the external matcher as `session_lang`.
+export function SessionLanguageToggle({ value, onChange, t }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div>
+        <p className="text-xs font-semibold text-text-primary">{t('matcher.sessionLanguage')}</p>
+        <p className="text-[11px] text-text-muted">{t('matcher.sessionLanguageDesc')}</p>
+      </div>
+      <div role="radiogroup" aria-label={t('matcher.sessionLanguage')} className="inline-flex rounded-lg border border-white/10 p-0.5">
+        {SESSION_LANGS.map(code => (
+          <button key={code} type="button" role="radio" aria-checked={value === code}
+            onClick={() => onChange(code)}
+            className={`rounded-md px-3 py-1 text-xs font-bold uppercase ${value === code ? 'bg-brand-red text-white' : 'text-text-muted hover:text-white'}`}>
+            {code}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
 
 function PhotoPositionGuide({ title, description }) {
   return (
@@ -45,13 +87,25 @@ export default function UnifiedCardScanner({ isOpen, onClose }) {
   const cameraRef = useRef()
   const galleryRef = useRef()
   const stagedFilesRef = useRef([])
-  const { t } = useSettings()
+  const { t, settings } = useSettings()
   const navigate = useNavigate()
   const { data: scannerConfiguration } = useQuery({
     queryKey: ['scanner-configuration'],
     queryFn: getScannerConfiguration,
     enabled: isOpen,
   })
+  const { data: externalMatcher } = useExternalMatcherStatus({ enabled: isOpen })
+  const matcherConfigured = externalMatcherConfigured(externalMatcher)
+  // An explicit earlier choice wins; otherwise follow the settings default,
+  // which may arrive after this component mounted.
+  const [storedSessionLang, setStoredSessionLang] = useState(
+    () => readSessionLang(safeLocalStorage(), null),
+  )
+  const sessionLang = storedSessionLang || defaultSessionLang(settings)
+  const setSessionLang = lang => {
+    setStoredSessionLang(lang)
+    writeSessionLang(safeLocalStorage(), lang)
+  }
 
   useEffect(() => {
     stagedFilesRef.current = stagedFiles
@@ -154,6 +208,7 @@ export default function UnifiedCardScanner({ isOpen, onClose }) {
       const job = await enqueueScanJob(
         stagedFiles.map(item => item.file),
         individualPositions,
+        { sessionLang: matcherConfigured ? sessionLang : undefined },
       )
       clearFiles()
       onClose?.()
@@ -175,7 +230,18 @@ export default function UnifiedCardScanner({ isOpen, onClose }) {
         isObscured={Boolean(confirmation)}
       >
         <div className="space-y-4 p-4 sm:p-5">
-          <p className="text-sm text-text-secondary">{t('scanner.subtitle')}</p>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-sm text-text-secondary">{t('scanner.subtitle')}</p>
+            {LIVE_SCANNER_URL && (
+              <a href={LIVE_SCANNER_URL} target="_blank" rel="noreferrer"
+                className="inline-flex items-center gap-1 text-xs font-semibold text-brand-red hover:underline">
+                {t('matcher.liveScanner')} <ExternalLink size={12} aria-hidden />
+              </a>
+            )}
+          </div>
+          {matcherConfigured && (
+            <SessionLanguageToggle value={sessionLang} onChange={setSessionLang} t={t} />
+          )}
           {scannerConfiguration?.visual_verification === 'disabled' && (
             <div role="status" className="rounded-xl border border-brand-yellow/35 bg-brand-yellow/10 px-3 py-2.5">
               <p className="text-xs font-semibold text-brand-yellow">{t('settings.scannerDegradedTitle')}</p>

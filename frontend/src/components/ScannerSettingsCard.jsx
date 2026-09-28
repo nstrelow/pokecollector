@@ -7,10 +7,131 @@ import {
   testScannerConfiguration,
   updateScannerConfiguration,
 } from '../api/client'
+import { useExternalMatcherStatus } from '../hooks/useExternalMatcherStatus'
+import {
+  SYNCED_MATCHER_LANGUAGES,
+  bundleLanguages,
+  externalMatcherConfigured,
+  filterSetRows,
+  supportedSetRows,
+} from '../utils/matcherDebug'
 import {
   DEFAULT_SCANNER_REQUEST_TIMEOUT_SECONDS,
   SCANNER_REQUEST_TIMEOUT_OPTIONS,
 } from '../utils/scannerTimeout'
+
+
+function formatUptime(seconds) {
+  const value = Number(seconds)
+  if (!Number.isFinite(value) || value < 0) return null
+  if (value < 3600) return `${Math.round(value / 60)} min`
+  if (value < 86400) return `${(value / 3600).toFixed(1)} h`
+  return `${(value / 86400).toFixed(1)} d`
+}
+
+// External matcher (pokescan) status: health, versions, and the sets its
+// bundle can identify per language. Presentational so it can be tested
+// without a query client; ExternalMatcherBlock below feeds it.
+export function ExternalMatcherView({ status, t, initialLang, initialQuery = '' }) {
+  const bundle = status?.bundle || null
+  const langs = bundleLanguages(bundle)
+  const [lang, setLang] = useState(initialLang && langs.includes(initialLang) ? initialLang : langs[0] || null)
+  const [query, setQuery] = useState(initialQuery)
+  const activeLang = lang && langs.includes(lang) ? lang : langs[0] || null
+  const rows = useMemo(() => supportedSetRows(bundle, activeLang), [bundle, activeLang])
+  const visibleRows = useMemo(() => filterSetRows(rows, query), [rows, query])
+
+  if (!externalMatcherConfigured(status)) return null
+  const health = status.health || {}
+  const ok = health.ok === true
+  const uptime = formatUptime(health.uptime)
+  const totals = bundle?.totals && typeof bundle.totals === 'object' ? bundle.totals : null
+  const uncatalogued = Array.isArray(bundle?.uncatalogued_scripts) ? bundle.uncatalogued_scripts : []
+  const unsynced = langs.filter(code => !SYNCED_MATCHER_LANGUAGES.includes(code))
+
+  return (
+    <section className="rounded-xl p-3 space-y-3" style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)' }}
+      data-testid="external-matcher-block">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div>
+          <p className="text-xs font-semibold text-text-primary">{t('matcher.settingsTitle')}{status.label ? ` · ${status.label}` : ''}</p>
+          <p className="text-[11px] text-text-muted mt-0.5">{t('matcher.settingsDesc')}</p>
+        </div>
+        <span data-health={ok ? 'ok' : 'down'}
+          className={`self-start rounded-full px-2.5 py-1 text-[11px] font-bold ${ok ? 'bg-green/15 text-green' : 'bg-brand-red/15 text-brand-red'}`}>
+          {ok ? t('matcher.healthOk') : t('matcher.healthDown')}
+        </span>
+      </div>
+
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] sm:grid-cols-4">
+        <div><dt className="text-text-muted">{t('matcher.commit')}</dt><dd className="font-mono text-text-primary">{health.commit || '–'}</dd></div>
+        <div><dt className="text-text-muted">{t('matcher.bundleVersion')}</dt><dd className="font-mono text-text-primary">{health.bundle_version || '–'}</dd></div>
+        <div><dt className="text-text-muted">{t('matcher.galleryVersion')}</dt><dd className="font-mono text-text-primary">{health.gallery_version || '–'}</dd></div>
+        <div><dt className="text-text-muted">{t('matcher.uptime')}</dt><dd className="font-mono text-text-primary">{uptime || '–'}</dd></div>
+      </dl>
+      {status.error && <p role="status" className="text-[11px] text-brand-red break-words">{status.error}</p>}
+
+      {langs.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-semibold text-text-primary">{t('matcher.supportedSets')}</p>
+            <div role="tablist" className="inline-flex rounded-lg border border-white/10 p-0.5">
+              {langs.map(code => (
+                <button key={code} type="button" role="tab" aria-selected={code === activeLang}
+                  onClick={() => setLang(code)}
+                  className={`rounded-md px-2.5 py-1 text-[11px] font-bold uppercase ${code === activeLang ? 'bg-brand-red text-white' : 'text-text-muted hover:text-white'}`}>
+                  {code}{totals?.[code]?.sets != null ? ` · ${totals[code].sets}` : ''}
+                </button>
+              ))}
+            </div>
+          </div>
+          <input type="search" value={query} onChange={event => setQuery(event.target.value)}
+            placeholder={t('matcher.searchSets')} aria-label={t('matcher.searchSets')}
+            className="input w-full text-xs" />
+          <div className="max-h-72 overflow-y-auto rounded-lg border border-white/[0.06]">
+            <table className="w-full text-left text-[11px]">
+              <thead className="sticky top-0 bg-bg-card text-text-muted">
+                <tr>
+                  <th className="px-2 py-1.5 font-semibold">{t('matcher.setName')}</th>
+                  <th className="px-2 py-1.5 font-semibold">{t('matcher.setCode')}</th>
+                  <th className="px-2 py-1.5 text-right font-semibold">{t('matcher.galleryPrints')}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleRows.map(row => (
+                  <tr key={row.set_id} className="border-t border-white/[0.04]">
+                    <td className="px-2 py-1 text-text-primary">
+                      {row.name}
+                      {row.era && <span className="ml-1 text-text-muted">· {row.era}</span>}
+                    </td>
+                    <td className="px-2 py-1 font-mono text-text-secondary">{row.set_code || row.set_id}</td>
+                    <td className="px-2 py-1 text-right font-mono text-text-secondary">{row.gallery_prints}/{row.prints}</td>
+                  </tr>
+                ))}
+                {visibleRows.length === 0 && (
+                  <tr><td colSpan={3} className="px-2 py-3 text-center text-text-muted">{t('matcher.noSetsFound')}</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <p className="text-[10px] text-text-muted">{visibleRows.length}/{rows.length} {t('matcher.setsShown')}</p>
+        </div>
+      )}
+
+      <p className="text-[11px] text-text-muted" data-testid="external-matcher-unsynced-note">
+        {t('matcher.unsyncedNote')}{unsynced.length > 0 ? ` (${unsynced.join(', ')})` : ''}
+      </p>
+      {uncatalogued.length > 0 && (
+        <p className="text-[11px] text-text-muted">{t('matcher.uncataloguedScripts')}: {uncatalogued.join(', ')}</p>
+      )}
+    </section>
+  )
+}
+
+function ExternalMatcherBlock({ t }) {
+  const { data } = useExternalMatcherStatus()
+  return <ExternalMatcherView status={data} t={t} />
+}
 
 
 export default function ScannerSettingsCard({ t }) {
@@ -361,6 +482,8 @@ export default function ScannerSettingsCard({ t }) {
                     : t('settings.scannerTest')}
           </button>
         </div>
+
+        <ExternalMatcherBlock t={t} />
 
         {data.administrator && (
           <details className="rounded-xl p-3" style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.06)' }}>
