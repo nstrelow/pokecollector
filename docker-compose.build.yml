@@ -10,3 +10,5 @@ services:
     build:
       context: .
       dockerfile: frontend/Dockerfile
+      args:
+        VITE_LIVE_SCANNER_URL: ${LIVE_SCANNER_URL:-}
