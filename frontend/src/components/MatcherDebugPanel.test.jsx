@@ -15,6 +15,16 @@ const render = (matcher, props = {}) => renderToStaticMarkup(
 const flagsIn = html => [...html.matchAll(/data-flag="([a-z_]+)"/g)].map(match => match[1])
 
 describe('MatcherDebugView', () => {
+  it('draws one timing segment per stage, never total, plus "other" for overhead', () => {
+    const timingsIn = html => [...html.matchAll(/data-timing="([a-z_]+)"/g)].map(match => match[1])
+    const exact = render(IDENTIFIED)
+    expect(timingsIn(exact)).toEqual(['frame_gate', 'localize', 'rectify', 'thumb_head', 'retrieve', 'ocr', 'fuse', 'twin'])
+    const overhead = render({ ...IDENTIFIED, timings_ms: { ...IDENTIFIED.timings_ms, total: 600 } })
+    expect(timingsIn(overhead).at(-1)).toBe('__other')
+    expect(timingsIn(overhead)).not.toContain('total')
+    expect(overhead).toContain(`${en.matcher.otherTiming} <span class="font-mono">96</span>`)
+  })
+
   it('renders an IDENTIFIED payload with the quad, plane, candidates and timings', () => {
     const html = render(IDENTIFIED)
     expect(html).toContain('data-testid="matcher-debug-panel"')

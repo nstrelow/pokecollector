@@ -5,6 +5,7 @@ import { Bug, Plus, Search } from 'lucide-react'
 import { fetchApiImageUrl, getScanItemMatcher } from '../api/client'
 import {
   TIMING_COLORS,
+  TIMING_REMAINDER_COLOR,
   TONE_CLASSES,
   activeFlags,
   formatScore,
@@ -185,20 +186,24 @@ function CandidateList({ matches, onSelect, onCompare, t }) {
 function TimingsBar({ timings, t }) {
   const { segments, total } = timingSegments(timings)
   if (!segments.length) return <p className="text-[11px] text-text-muted">{t('matcher.noTimings')}</p>
+  const colorOf = (segment, index) => (
+    segment.remainder ? TIMING_REMAINDER_COLOR : TIMING_COLORS[index % TIMING_COLORS.length]
+  )
+  const labelOf = segment => (segment.remainder ? t('matcher.otherTiming') : segment.key)
   return (
     <div className="space-y-1.5">
       <div className="flex h-3 w-full overflow-hidden rounded-full bg-white/10" role="img"
         aria-label={`${t('matcher.timings')}: ${Math.round(total)} ms`}>
         {segments.map((segment, index) => (
-          <div key={segment.key} title={`${segment.key}: ${segment.ms} ms`}
-            style={{ width: `${segment.percent}%`, background: TIMING_COLORS[index % TIMING_COLORS.length] }} />
+          <div key={segment.key} title={`${labelOf(segment)}: ${Math.round(segment.ms)} ms`} data-timing={segment.key}
+            style={{ width: `${segment.percent}%`, background: colorOf(segment, index) }} />
         ))}
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-text-secondary">
         {segments.map((segment, index) => (
           <span key={segment.key} className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-sm" style={{ background: TIMING_COLORS[index % TIMING_COLORS.length] }} />
-            {segment.key} <span className="font-mono">{Math.round(segment.ms)}</span>
+            <span className="h-2 w-2 rounded-sm" style={{ background: colorOf(segment, index) }} />
+            {labelOf(segment)} <span className="font-mono">{Math.round(segment.ms)}</span>
           </span>
         ))}
         <span className="font-bold text-text-primary">{t('matcher.total')} <span className="font-mono">{Math.round(total)} ms</span></span>
