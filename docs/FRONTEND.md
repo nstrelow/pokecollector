@@ -291,6 +291,16 @@ the confirmed card has no catalogue or custom fallback artwork, it then makes a
 best-effort upload into the user's private collection-card photo storage.
 Failure to retain that optional copy never rolls back the collection add.
 
+### External matcher (pokescan)
+
+When the backend has `EXTERNAL_MATCHER_URL` configured (see `docs/POKESCANNER-PLAN.md`), three extra surfaces appear; all of them hide themselves otherwise:
+
+- **Debug panel** (`components/MatcherDebugPanel.jsx`, mounted in `ScanItemPanel`): for items whose `recognized._source === "external"` (or `has_matcher`) it loads `GET /api/cards/recognize/jobs/{job}/items/{item}/matcher` and shows the source photo with the detected quad as an SVG overlay (viewBox = `geometry.image_size`, so it scales with the rendered box), the rectified plane (fetched as an authenticated blob), the decision state badge, hint, truthy flags as chips (incl. `twin.ambiguous`), script/orientation/card-back score, language evidence, number reading + verdict, the ranked candidates with score bars and margins (compare/add reuse the existing review and resolve-and-add flow), and a stacked per-stage timings bar. Collapsible, open by default for external items; a 404 hides it silently. Pure helpers live in `utils/matcherDebug.js`.
+- **Scanner Settings** (`ExternalMatcherView` in `components/ScannerSettingsCard.jsx`): health (online/down, commit, bundle, gallery, uptime) and a per-language, searchable supported-sets table from `GET /api/settings/scanner/external`, plus the note that ja/zh-tw hits are returned but not synced. Hidden on 401/403/404 or `configured: false`; a 503 shows it as down. The query is shared and cached (`hooks/useExternalMatcherStatus.js`).
+- **Scanner modal** (`UnifiedCardScanner.jsx`): an en/de **Card language** toggle sent as the `session_lang` form field on `POST /api/cards/recognize/jobs`, persisted in `localStorage` (`scanner_session_lang`) and defaulting to the app language when it is en/de, else `en`. A **Live scanner** link appears when the build sets `VITE_LIVE_SCANNER_URL`.
+
+Strings live in the `matcher` namespace of `i18n/en.js` and `i18n/de.js`; other locales fall back to English.
+
 The AI/Card Scanner section in `pages/Settings.jsx` shows **Share scanner diagnostics** as an available control only when the server configured writable `SCAN_TRACE_DIR` storage. The toggle is off by default. Turning it off stops future tracing without deleting existing data; the adjacent confirmed delete button removes all stored diagnostics for the current user and remains available through the stable cleanup path when new collection is disabled.
 
 ## API Layer
