@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { AlertTriangle, Camera, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Loader2, Plus, RefreshCw, Sparkles, Trash2, X } from 'lucide-react'
 import { fetchScanCandidateImage, fetchScanJobItemImage } from '../api/client'
 import CardImage from './CardImage'
+import MatcherDebugPanel from './MatcherDebugPanel'
 import { useDialogBehavior } from './ui/dialogBehavior'
 import { formatRetryCountdown } from '../utils/retryCountdown'
 
@@ -846,6 +847,19 @@ export function ScanItemPanel({ jobId, item, onAdd, onRetry, onDismiss, onReview
           )}
         </div>
       </div>
+
+      {/* External matcher diagnostics; renders nothing for other providers. */}
+      {item.status === 'done' && (
+        <MatcherDebugPanel
+          className="mt-4"
+          jobId={jobId}
+          item={item}
+          photoUrl={photoUrl}
+          onSelect={item.resolved ? undefined : match => onAdd(item, match)}
+          onCompare={(match, matchIndex) => onReview(item, matchIndex)}
+          t={t}
+        />
+      )}
 
       {item.status === 'done' && item.matches?.length > 0 && (
         <div className="mt-4">

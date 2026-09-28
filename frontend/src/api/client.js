@@ -124,10 +124,12 @@ export const recognizeCard = (imageFile, requestTimeoutSeconds) => {
 }
 
 // Persistent background card-scan queue.
-export const enqueueScanJob = (files = [], individualPositions = []) => {
+export const enqueueScanJob = (files = [], individualPositions = [], { sessionLang } = {}) => {
   const formData = new FormData()
   files.forEach(file => formData.append('files', file))
   formData.append('individual_positions', JSON.stringify(individualPositions))
+  // External matcher only: which language the physical cards are in (en|de).
+  if (sessionLang) formData.append('session_lang', sessionLang)
   return api.post('/cards/recognize/jobs', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   }).then(r => r.data)
@@ -158,6 +160,17 @@ export const fetchScanJobItemImageBlob = (jobId, itemId) =>
 // as a blob rather than pointed at directly.
 export const fetchScanCandidateImage = (jobId, itemId, index) =>
   api.get(`/cards/recognize/jobs/${jobId}/items/${itemId}/candidates/${index}/image`, { responseType: 'blob' })
+    .then(r => URL.createObjectURL(r.data))
+
+// External matcher (pokescan) debug blob for one scan item; 404 when the item
+// was not recognised by the external matcher.
+export const getScanItemMatcher = (jobId, itemId) =>
+  api.get(`/cards/recognize/jobs/${jobId}/items/${itemId}/matcher`).then(r => r.data)
+// Matcher trace artefacts (plane/overlay) are authenticated like the photo,
+// so they are fetched as blobs. Accepts the absolute `/api/...` URLs the
+// backend hands out.
+export const fetchApiImageUrl = path =>
+  api.get(String(path).replace(/^\/api(?=\/)/, ''), { responseType: 'blob' })
     .then(r => URL.createObjectURL(r.data))
 
 // Custom card migration
@@ -404,6 +417,8 @@ export const saveSettings = (data) => api.put('/settings/', data)
 export const getSetting = (key) => api.get(`/settings/${key}`).then(r => r.data)
 export const setSetting = (key, value) => api.post(`/settings/${key}`, { value }).then(r => r.data)
 export const getScannerConfiguration = () => api.get('/settings/scanner').then(r => r.data)
+// Proxied /health + /bundle of the external matcher; 404 when unsupported.
+export const getExternalMatcherStatus = () => api.get('/settings/scanner/external').then(r => r.data)
 export const updateScannerConfiguration = (data) => api.put('/settings/scanner', data).then(r => r.data)
 export const testScannerConfiguration = (data) => api.post('/settings/scanner/test', data, {
   timeout: scannerTestRequestTimeoutMs(data?.request_timeout_seconds),
