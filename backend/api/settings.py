@@ -772,6 +772,7 @@ async def get_external_matcher_status(
         return {
             "configured": False,
             "label": provider_label(EXTERNAL),
+            "endpoint": None,
             "health": None,
             "bundle": None,
             "error": None,
