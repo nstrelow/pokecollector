@@ -79,7 +79,9 @@ RECOGNIZED_FIELDS = (
 REF_PROXY_PREFIX = "/api/cards/recognize/matcher/ref/"
 
 PRINT_ID_PATTERN = re.compile(r"[a-z]{2}(?:-[a-z]{2})?:[A-Za-z0-9._!?+-]{1,80}")
-TRACE_ID_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,100}")
+# Must start with an alphanumeric so "." / ".." can never become a dot
+# segment in /trace/{trace_id}/... (httpx normalises those away).
+TRACE_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,99}")
 _LANG_PATTERN = re.compile(r"[a-z]{2}(?:-[a-z]{2})?")
 
 
@@ -526,6 +528,10 @@ async def recognize_with_matcher(
     Raises the ExternalMatcherError family; callers translate those into their
     own failure types.
     """
+    if trace is not None and hasattr(trace, "add_secret"):
+        # Defence in depth: nothing should echo the bearer token, but if the
+        # matcher ever does (error text, hint), the trace redacts the exact value.
+        trace.add_secret(matcher_token())
     try:
         payload = await identify(image_bytes, content_type, session_lang, debug=True)
     except ExternalMatcherError as exc:
