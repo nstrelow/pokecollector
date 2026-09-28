@@ -277,6 +277,11 @@ class ExternalMatcherClientTests(MatcherEnvMixin, unittest.TestCase):
         self.assertIsNone(asyncio.run(external_matcher.fetch_ref_image("en:a/b")))
         self.assertIsNone(asyncio.run(external_matcher.fetch_trace_artefact("t", "secret")))
         self.assertIsNone(asyncio.run(external_matcher.fetch_trace_artefact("../x", "plane")))
+        # Pure dot ids would be normalised into a different path by httpx.
+        for bad in ("..", ".", ".x", ":x", "-x"):
+            self.assertFalse(external_matcher.valid_trace_id(bad), bad)
+            self.assertIsNone(asyncio.run(external_matcher.fetch_trace_artefact(bad, "plane")))
+        self.assertTrue(external_matcher.valid_trace_id("2026-09-28T21-04-11Z_ab12cd"))
         # Invalid ids never reach the transport; only the valid ref did.
         self.assertEqual(len(self.fake.requests), 1)
 
@@ -701,6 +706,17 @@ class ExternalTraceTests(MatcherEnvMixin, unittest.TestCase):
             find_trace_artefact(7, 3, 9, trace.trace_id, "plane"),
             path.parent / f"{stem}.plane.webp",
         )
+
+    def test_matcher_token_is_redacted_from_the_trace(self):
+        payload = dict(fixture("identified_ja"))
+        payload["hint"] = "debug echo: matcher-secret"
+        self.fake.on("POST", "/identify", httpx.Response(200, json=payload))
+        trace = self._trace()
+        asyncio.run(external_matcher.recognize_with_matcher(
+            self.db, b"jpeg", "image/jpeg", trace=trace
+        ))
+        text = trace.save().read_text()
+        self.assertNotIn("matcher-secret", text)
 
     def test_artefact_failures_never_fail_the_scan(self):
         payload = fixture("identified")
