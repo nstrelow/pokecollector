@@ -39,11 +39,14 @@ FastAPI app entry point: `backend/main.py`.
 | PUT | `/api/cards/{card_id}/custom-image` | Set/clear a validated HTTPS fallback image for an API card with no TCGdex artwork |
 | GET | `/api/cards/{card_id}` | Card detail |
 | POST | `/api/cards/recognize` | Card recognition through the user's configured vision provider |
-| POST | `/api/cards/recognize/jobs` | Sanitize and enqueue up to 50 persistent scan photos |
+| POST | `/api/cards/recognize/jobs` | Sanitize and enqueue up to 50 persistent scan photos; optional form field `session_lang` (`en`\|`de`) is stored on the job and forwarded to an external matcher |
 | GET | `/api/cards/recognize/jobs` | Current user's active/actionable scan jobs |
 | GET | `/api/cards/recognize/jobs/{job_id}` | User-scoped scan job and review items, resolved items included (collapsed row) |
 | GET | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/image` | Private sanitized review photo |
-| GET | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/candidates/{index}/image` | A candidate's full-resolution artwork, served from the shared image cache |
+| GET | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/candidates/{index}/image` | A candidate's full-resolution artwork, served from the shared image cache (external-matcher reference images are proxied from the matcher) |
+| GET | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/matcher` | External matcher debug blob for one item (response minus candidates) + artefact URLs; 404 for LLM scans |
+| GET | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/matcher/{plane\|overlay}.webp` | Rectified card / overlay: the stored diagnostics copy, else fetched from the matcher's trace store; 404 when neither exists |
+| GET | `/api/cards/recognize/matcher/ref/{print_id}` | Unauthenticated, id-validated proxy of the matcher's `/ref` thumbnail for candidates missing from the local catalogue |
 | POST | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/resolve` | Confirm/dismiss an item and delete its queued photo |
 | POST | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/resolve-and-add` | Atomically add the selected card and resolve the queued item |
 | POST | `/api/cards/recognize/jobs/{job_id}/items/{item_id}/retry` | Retry one reviewable item individually |
@@ -206,7 +209,8 @@ responses.
 | GET | `/api/settings/` | Effective settings for current user |
 | GET | `/api/settings/scanner` | Typed provider/model readiness for the current user |
 | PUT | `/api/settings/scanner` | Save an already-verified scanner configuration or remove a key |
-| POST | `/api/settings/scanner/test` | Two-image capability test with optional atomic save |
+| POST | `/api/settings/scanner/test` | Two-image capability test with optional atomic save (`external`: a `/health` probe instead) |
+| GET | `/api/settings/scanner/external` | Proxied external matcher `/health` + `/bundle` (admin, or anyone in single-user mode) |
 | GET | `/api/settings/tcgdex-languages` | Supported TCGdex language metadata |
 | GET | `/api/settings/tcgdex-filter-languages` | Languages currently available for catalogue filtering |
 | PUT | `/api/settings/` | Update settings |
@@ -483,6 +487,35 @@ Additional matching behavior:
 - Result payload includes recognized metadata and candidate matches, each flagged with `printed_total_mismatch` when its printed set total contradicts the recognized card (the same signal the ranker already uses to demote it)
 - `backend/services/scan_candidate_images.py` caches each unresolved review's full-resolution candidate artwork in the shared `ImageCache` table (see `backend/api/images.py`); `match_card_info` fires a bounded, non-blocking prewarm of the top-ranked candidates so the review UI's first look is usually a local cache read. Fetches accept only image responses from the TCGdex HTTPS CDN, and this feature's cache entries are capped.
 
+### External card matcher
+
+`backend/services/external_matcher.py` implements provider `external`, enabled
+when `EXTERNAL_MATCHER_URL` is set (see `docs/scanner-providers.md` for the
+contract). It is not an LLM, so the queue path is different:
+
+- `default_scan_processor` posts the photo to `/identify` (with the job's
+  `session_lang` and `debug=1`), skips text extraction and `match_card_info`,
+  and maps candidates with `to_matches()` to the normal match shape
+  (`id = <tcg_card_id>_<lang>`, local catalogue image when the row exists, else
+  the `/api/cards/recognize/matcher/ref/...` proxy). `recognized` has every text
+  field `null` except `language`, plus `_source="external"`,
+  `_identity_decision` (matcher state) and `_identity_confident`.
+- The matcher's full response minus candidates is stored in
+  `scan_job_items.matcher_result` and served by `GET .../items/{item}/matcher`;
+  the item payload only carries `has_matcher`.
+- Failures: connection refused / 502–504 ⇒ transient retry with backoff
+  (`retry_reason="matcher_unavailable"`, `Retry-After` honoured); timeout
+  (`EXTERNAL_MATCHER_TIMEOUT`) or 4xx ⇒ the item fails with the message;
+  malformed answers / other 5xx ⇒ the normal three recognition attempts.
+- Composite (grid) jobs are never created for `external`, and
+  `default_composite_processor` returns every position unresolved so an older
+  batch is requeued per photo.
+- No capability proof is required (`scanner_capability_mode` returns `full`);
+  Scanner Settings' Test runs `/health`.
+- With diagnostics enabled, the trace JSON gains `matcher` (full response) and
+  `session_lang`, and the matcher's `plane`/`overlay` webps are stored beside the
+  sanitized JPEG as `<stem>.plane.webp` / `<stem>.overlay.webp` (best effort).
+
 ### Scanner diagnostics
 
 `backend/services/scan_trace.py` is disabled unless `SCAN_TRACE_DIR` points to storage the backend can create and write. Availability alone does not collect data: each user must opt in with `scan_diagnostics_enabled=true`, which is off by default. `SCAN_TRACE_STORAGE_DIR` is the stable cleanup location; standard Docker Compose keeps it at `/app/data/scan-traces` even when new collection is disabled.
@@ -511,6 +544,7 @@ Each item is committed independently, so one invalid or unavailable card does no
 ## Migrations
 
 - Migrations are raw SQL statements in `backend/database.py`
+- External matcher: `scan_jobs.session_lang VARCHAR` and `scan_job_items.matcher_result JSON` (both nullable)
 - They are idempotent and run on startup
 - Automatic pre-upgrade backups run before `init_db()` migrations on existing installs when the app version changes
 - Legacy migration comments still mention older columns like `grade` or removed integrations, but the current runtime model and routers do not include eBay functionality

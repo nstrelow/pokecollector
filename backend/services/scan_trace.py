@@ -47,6 +47,8 @@ _SENSITIVE_ERROR_PATTERNS = (
     (re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b"), "[REDACTED_TOKEN]"),
 )
 
+TRACE_ARTEFACT_KINDS = ("plane", "overlay")
+
 CANDIDATE_FIELDS = (
     "tcg_card_id",
     "name",
@@ -59,6 +61,8 @@ CANDIDATE_FIELDS = (
     "regulation_mark",
     "image",
     "lang",
+    "_score",
+    "_margin",
 )
 
 
@@ -231,6 +235,7 @@ class ScanTrace:
             "correct": None,
         }
         self._image: bytes | None = None
+        self._artefacts: dict[str, bytes] = {}
         self._secrets: list[str] = []
 
     def add_secret(self, value: str | None) -> None:
@@ -248,6 +253,19 @@ class ScanTrace:
         self._image = image_bytes
         self.data["image_sha256"] = hashlib.sha256(image_bytes).hexdigest()
         self.data["image_bytes"] = len(image_bytes)
+
+    def record_matcher(self, payload: dict, *, session_lang: str | None = None) -> None:
+        """Store an external matcher's full response (candidates included)."""
+        if not self.enabled:
+            return
+        self.data["matcher"] = self._sanitize(payload)
+        self.data["session_lang"] = session_lang
+
+    def add_artefact(self, kind: str, data: bytes | None) -> None:
+        """Queue a matcher debug image (plane/overlay webp) to save beside the photo."""
+        if not self.enabled or not data or kind not in TRACE_ARTEFACT_KINDS:
+            return
+        self._artefacts[kind] = data
 
     def record_extraction(
         self,
@@ -377,6 +395,7 @@ class ScanTrace:
             return None
         image_temp: Path | None = None
         json_temp: Path | None = None
+        artefact_temps: dict[Path, Path] = {}
         try:
             _ensure_private_dir(self._root)
             _ensure_private_dir(user_dir)
@@ -397,6 +416,12 @@ class ScanTrace:
                 image_temp = day / f".{stem}.{uuid.uuid4().hex}.jpg.tmp"
                 _write_private(image_temp, self._image)
                 self.data["image_file"] = image_path.name
+            for kind, content in self._artefacts.items():
+                artefact_path = day / f"{stem}.{kind}.webp"
+                artefact_temp = day / f".{stem}.{uuid.uuid4().hex}.{kind}.webp.tmp"
+                _write_private(artefact_temp, content)
+                artefact_temps[artefact_temp] = artefact_path
+                self.data.setdefault("artefact_files", {})[kind] = artefact_path.name
             path = day / f"{stem}.json"
             json_temp = day / f".{stem}.{uuid.uuid4().hex}.json.tmp"
             _write_private(
@@ -411,15 +436,21 @@ class ScanTrace:
             if _is_revoked(self.user_id, self._root):
                 if image_temp:
                     image_temp.unlink(missing_ok=True)
+                for artefact_temp in artefact_temps:
+                    artefact_temp.unlink(missing_ok=True)
                 json_temp.unlink(missing_ok=True)
                 return None
             if image_temp:
                 image_temp.replace(image_path)
+            for artefact_temp, artefact_path in artefact_temps.items():
+                artefact_temp.replace(artefact_path)
             json_temp.replace(path)
             return path
         except Exception:
             if image_temp:
                 image_temp.unlink(missing_ok=True)
+            for artefact_temp in artefact_temps:
+                artefact_temp.unlink(missing_ok=True)
             if json_temp:
                 json_temp.unlink(missing_ok=True)
             logger.exception("Failed to write scan diagnostics")
@@ -447,6 +478,27 @@ def create_scan_trace(
         provider=provider,
         model=model,
     )
+
+
+def find_trace_artefact(
+    user_id: int,
+    job_id: int,
+    item_id: int,
+    trace_id: str,
+    kind: str,
+) -> Path | None:
+    """Locate a stored matcher artefact for one queue item's trace, if any."""
+    if kind not in TRACE_ARTEFACT_KINDS or not re.fullmatch(r"[0-9a-f]{12}", str(trace_id or "")):
+        return None
+    name = f"job{_safe(job_id)}-item{_safe(item_id)}-{trace_id}.{kind}.webp"
+    for root in _cleanup_roots():
+        user_dir = _user_dir(user_id, root)
+        if user_dir is None or not user_dir.is_dir():
+            continue
+        for path in sorted(user_dir.glob(f"*/{name}")):
+            if path.is_file():
+                return path
+    return None
 
 
 def record_ground_truth(
