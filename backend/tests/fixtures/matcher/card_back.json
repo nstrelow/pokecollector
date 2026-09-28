@@ -1,0 +1,77 @@
+{
+  "matcher": {
+    "name": "pokescan",
+    "commit": "8f0ff3b",
+    "bundle": "v12"
+  },
+  "state": "CARD_BACK",
+  "confident": false,
+  "hint": null,
+  "print_id": null,
+  "identity_key": null,
+  "candidates": [],
+  "language": {
+    "options": [],
+    "source": null,
+    "scores": null,
+    "unsupported": null
+  },
+  "number": {
+    "reading": null,
+    "verdict": null
+  },
+  "twin": {
+    "ambiguous": false,
+    "verdict": null,
+    "scores": null
+  },
+  "flags": {
+    "low_confidence": false,
+    "picker_only": false,
+    "via_fallback": false,
+    "via_refine": false,
+    "slab_trim": false,
+    "classic_reprint": false,
+    "unreferenced_guard": false,
+    "card_back_score": 0.97,
+    "script": null,
+    "orientation": 0
+  },
+  "geometry": {
+    "quad": [
+      [
+        112,
+        80
+      ],
+      [
+        1010,
+        96
+      ],
+      [
+        996,
+        1330
+      ],
+      [
+        98,
+        1312
+      ]
+    ],
+    "source": "primary",
+    "image_size": [
+      1200,
+      1600
+    ]
+  },
+  "timings_ms": {
+    "frame_gate": 3,
+    "localize": 90,
+    "rectify": 4,
+    "thumb_head": 20,
+    "retrieve": 310,
+    "ocr": 60,
+    "fuse": 2,
+    "twin": 15,
+    "total": 504
+  },
+  "trace_id": "2026-09-28T21-04-11Z_ab12cd"
+}

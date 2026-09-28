@@ -1,0 +1,92 @@
+{
+  "matcher": {
+    "name": "pokescan",
+    "commit": "8f0ff3b",
+    "bundle": "v12"
+  },
+  "state": "IDENTIFIED",
+  "confident": true,
+  "hint": null,
+  "print_id": "zh-tw:SV3a-043",
+  "identity_key": "SV|SV3a|043",
+  "candidates": [
+    {
+      "print_id": "zh-tw:SV3a-043",
+      "tcg_card_id": "SV3a-043",
+      "lang": "zh-tw",
+      "set_id": "SV3a",
+      "number": "043",
+      "name": "走路草",
+      "rarity": "C",
+      "score": 0.9,
+      "margin": 0.15,
+      "image": "/ref/zh-tw:SV3a-043"
+    }
+  ],
+  "language": {
+    "options": [
+      "zh-tw:SV3a-043"
+    ],
+    "source": "script",
+    "scores": null,
+    "unsupported": null
+  },
+  "number": {
+    "reading": null,
+    "verdict": null
+  },
+  "twin": {
+    "ambiguous": false,
+    "verdict": null,
+    "scores": null
+  },
+  "flags": {
+    "low_confidence": false,
+    "picker_only": false,
+    "via_fallback": false,
+    "via_refine": false,
+    "slab_trim": false,
+    "classic_reprint": false,
+    "unreferenced_guard": false,
+    "card_back_score": 0.03,
+    "script": "han",
+    "orientation": 0
+  },
+  "geometry": {
+    "quad": [
+      [
+        112,
+        80
+      ],
+      [
+        1010,
+        96
+      ],
+      [
+        996,
+        1330
+      ],
+      [
+        98,
+        1312
+      ]
+    ],
+    "source": "primary",
+    "image_size": [
+      1200,
+      1600
+    ]
+  },
+  "timings_ms": {
+    "frame_gate": 3,
+    "localize": 90,
+    "rectify": 4,
+    "thumb_head": 20,
+    "retrieve": 310,
+    "ocr": 60,
+    "fuse": 2,
+    "twin": 15,
+    "total": 504
+  },
+  "trace_id": "2026-09-28T21-04-11Z_ab12cd"
+}

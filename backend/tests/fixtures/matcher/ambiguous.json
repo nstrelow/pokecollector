@@ -1,0 +1,110 @@
+{
+  "matcher": {
+    "name": "pokescan",
+    "commit": "8f0ff3b",
+    "bundle": "v12"
+  },
+  "state": "AMBIGUOUS",
+  "confident": false,
+  "hint": null,
+  "print_id": "en:sv08.5-161",
+  "identity_key": "sv|sv08.5|161",
+  "candidates": [
+    {
+      "print_id": "en:sv08.5-161",
+      "tcg_card_id": "sv08.5-161",
+      "lang": "en",
+      "set_id": "sv08.5",
+      "number": "161",
+      "name": "Umbreon ex",
+      "rarity": "Special Illustration Rare",
+      "score": 0.74,
+      "margin": 0.01,
+      "image": "/ref/en:sv08.5-161"
+    },
+    {
+      "print_id": "en:sv08.5-060",
+      "tcg_card_id": "sv08.5-060",
+      "lang": "en",
+      "set_id": "sv08.5",
+      "number": "060",
+      "name": "Umbreon ex",
+      "rarity": "Double Rare",
+      "score": 0.73,
+      "margin": 0.0,
+      "image": "/ref/en:sv08.5-060"
+    }
+  ],
+  "language": {
+    "options": [
+      "en:sv08.5-161"
+    ],
+    "source": "detected",
+    "scores": {
+      "en": 0.8,
+      "de": 0.2
+    },
+    "unsupported": null
+  },
+  "number": {
+    "reading": null,
+    "verdict": null
+  },
+  "twin": {
+    "ambiguous": true,
+    "verdict": null,
+    "scores": {
+      "en:sv08.5-161": 0.51,
+      "en:sv08.5-060": 0.49
+    }
+  },
+  "flags": {
+    "low_confidence": true,
+    "picker_only": false,
+    "via_fallback": false,
+    "via_refine": false,
+    "slab_trim": false,
+    "classic_reprint": false,
+    "unreferenced_guard": false,
+    "card_back_score": 0.03,
+    "script": "latin",
+    "orientation": 0
+  },
+  "geometry": {
+    "quad": [
+      [
+        112,
+        80
+      ],
+      [
+        1010,
+        96
+      ],
+      [
+        996,
+        1330
+      ],
+      [
+        98,
+        1312
+      ]
+    ],
+    "source": "primary",
+    "image_size": [
+      1200,
+      1600
+    ]
+  },
+  "timings_ms": {
+    "frame_gate": 3,
+    "localize": 90,
+    "rectify": 4,
+    "thumb_head": 20,
+    "retrieve": 310,
+    "ocr": 60,
+    "fuse": 2,
+    "twin": 15,
+    "total": 504
+  },
+  "trace_id": "2026-09-28T21-04-11Z_ab12cd"
+}

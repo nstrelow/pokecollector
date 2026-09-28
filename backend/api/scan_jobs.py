@@ -15,6 +15,7 @@ from api.auth import get_current_user
 from database import get_db
 from models import ScanJob, ScanJobItem, User
 from schemas import CollectionItemCreate, CollectionItemResponse
+from services import external_matcher
 from services.scan_candidate_images import fetch_and_cache_candidate_image
 from services.scan_queue import (
     drain_scan_queue,
@@ -92,6 +93,9 @@ def _item_payload(item: ScanJobItem) -> dict:
         "transient_failures": item.transient_failures,
         "recognized": item.recognized,
         "matches": item.matches,
+        # The debug blob itself is served by GET .../matcher; the list payload
+        # only says whether one exists.
+        "has_matcher": bool(item.matcher_result),
         "error": item.error,
         "has_image": bool(item.image_path),
         "next_attempt_at": (
@@ -108,16 +112,22 @@ async def enqueue_scan_job(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(...),
     individual_positions: str | None = Form(None),
+    session_lang: str | None = Form(None),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Sanitize a batch, persist it, and return without waiting for its provider."""
+    from services.external_matcher import normalize_session_lang
     from services.scan_providers import (
         SCANNER_CAPABILITY_DEGRADED,
         get_provider,
         require_scanner_capability_mode,
     )
 
+    try:
+        session_lang = normalize_session_lang(session_lang)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid scan session language.")
     provider = get_provider(db, current_user.id)
     capability_mode = require_scanner_capability_mode(
         db, current_user.id, provider.name, provider.model()
@@ -151,6 +161,9 @@ async def enqueue_scan_job(
         len(files) > 1
         and position not in individual_set
         and capability_mode != SCANNER_CAPABILITY_DEGRADED
+        # The external matcher identifies one card per photo; composite grids
+        # are an LLM technique.
+        and provider.name != "external"
         for position in range(len(files))
     ]
     try:
@@ -159,6 +172,7 @@ async def enqueue_scan_job(
             current_user.id,
             files,
             batch_modes=batch_modes,
+            session_lang=session_lang,
         )
     except ScanUploadError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -261,6 +275,8 @@ async def get_scan_candidate_image(
     url = match.get("image_hd") or match.get("image")
     if not url:
         raise HTTPException(status_code=404, detail="Candidate image not found.")
+    if str(url).startswith(external_matcher.REF_PROXY_PREFIX):
+        return await _matcher_ref_response(str(match.get("print_id") or ""))
 
     result = await fetch_and_cache_candidate_image(db, url)
     if result is None:
@@ -271,6 +287,118 @@ async def get_scan_candidate_image(
         media_type=content_type,
         headers={"Cache-Control": "private, max-age=86400"},
     )
+
+
+def _matcher_artefact_url(job_id: int, item_id: int, kind: str) -> str:
+    return f"/api/cards/recognize/jobs/{job_id}/items/{item_id}/matcher/{kind}.webp"
+
+
+def _local_matcher_artefact(
+    item: ScanJobItem, current_user: User, kind: str
+):
+    from services.scan_trace import find_trace_artefact
+
+    blob = item.matcher_result if isinstance(item.matcher_result, dict) else {}
+    local_trace_id = blob.get("_pokecollector_trace_id")
+    if not local_trace_id:
+        return None
+    return find_trace_artefact(current_user.id, item.job_id, item.id, local_trace_id, kind)
+
+
+@router.get("/recognize/jobs/{job_id}/items/{item_id}/matcher")
+def get_scan_job_item_matcher(
+    job_id: int,
+    item_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """The external matcher's stored debug blob for one scan, for the debug panel.
+
+    Artefact URLs are listed when they can plausibly be served: a copy stored
+    with this user's scan diagnostics, or the matcher's own trace store.
+    """
+    item = _get_own_item(db, job_id, item_id, current_user)
+    blob = item.matcher_result
+    if not isinstance(blob, dict) or not blob:
+        raise HTTPException(status_code=404, detail="No matcher result for this scan.")
+    remote_trace = external_matcher.valid_trace_id(blob.get("trace_id"))
+    artefacts = {
+        "source": (
+            f"/api/cards/recognize/jobs/{job_id}/items/{item_id}/image"
+            if item.image_path
+            else None
+        ),
+    }
+    for kind in external_matcher.TRACE_ARTEFACT_KINDS:
+        available = remote_trace or _local_matcher_artefact(item, current_user, kind) is not None
+        artefacts[kind] = _matcher_artefact_url(job_id, item_id, kind) if available else None
+    return {
+        "job_id": job_id,
+        "item_id": item_id,
+        "session_lang": item.job.session_lang,
+        "matcher": blob,
+        "artefacts": artefacts,
+    }
+
+
+@router.get("/recognize/jobs/{job_id}/items/{item_id}/matcher/{kind}.webp")
+async def get_scan_job_item_matcher_artefact(
+    job_id: int,
+    item_id: int,
+    kind: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Serve the rectified plane / overlay: local diagnostics copy first,
+    otherwise fetched from the matcher by the trace id stored server-side."""
+    if kind not in external_matcher.TRACE_ARTEFACT_KINDS:
+        raise HTTPException(status_code=404, detail="Matcher artefact not found.")
+    item = _get_own_item(db, job_id, item_id, current_user)
+    blob = item.matcher_result if isinstance(item.matcher_result, dict) else None
+    if not blob:
+        raise HTTPException(status_code=404, detail="Matcher artefact not found.")
+    local = _local_matcher_artefact(item, current_user, kind)
+    if local is not None:
+        return FileResponse(local, media_type="image/webp")
+    trace_id = blob.get("trace_id")
+    data = (
+        await external_matcher.fetch_trace_artefact(trace_id, kind)
+        if external_matcher.matcher_enabled() and external_matcher.valid_trace_id(trace_id)
+        else None
+    )
+    if not data:
+        raise HTTPException(status_code=404, detail="Matcher artefact not found.")
+    return Response(
+        content=data,
+        media_type="image/webp",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+async def _matcher_ref_response(print_id: str) -> Response:
+    if not external_matcher.matcher_enabled() or not external_matcher.valid_print_id(print_id):
+        raise HTTPException(status_code=404, detail="Reference image not found.")
+    result = await external_matcher.fetch_ref_image(print_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Reference image not found.")
+    data, content_type = result
+    return Response(
+        content=data,
+        media_type=content_type,
+        headers={"Cache-Control": "public, max-age=604800"},
+    )
+
+
+@router.get("/recognize/matcher/ref/{print_id}")
+async def get_matcher_reference_image(print_id: str):
+    """Candidate thumbnail for prints the local catalogue lacks (e.g. ja/zh-tw).
+
+    Unauthenticated on purpose, like /api/images/card: it is rendered by plain
+    <img> tags, and the content is public card art. Only the administrator's
+    matcher is contacted and the id is validated against a strict pattern, so
+    this cannot be used as an open proxy.
+    """
+    return await _matcher_ref_response(print_id)
 
 
 @router.post("/recognize/jobs/{job_id}/items/{item_id}/resolve")

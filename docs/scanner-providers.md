@@ -163,6 +163,60 @@ OPENAI_API_KEY_REQUIRED=true
 
 Do not add `/chat/completions` to `OPENAI_BASE_URL`; PokéCollector adds that path itself. Do not point the base URL at an untrusted server: it receives card photos, prompts, and any key users submit for that provider.
 
+### External card matcher (pokescan)
+
+An external matcher is a separate service that identifies the card from the
+photo itself and returns ranked catalogue candidates. It is not a language
+model: there is no prompt, no API key per user, and no image-capability test.
+
+```env
+EXTERNAL_MATCHER_URL=http://10.0.1.xx:8000   # base URL, reachable from the backend
+EXTERNAL_MATCHER_TOKEN=                      # optional bearer token
+EXTERNAL_MATCHER_LABEL=pokescan              # name shown in Scanner Settings
+EXTERNAL_MATCHER_TIMEOUT=20                  # seconds per photo
+```
+
+With the URL set, **external** appears first in Scanner Settings and is the
+default for users who never chose a provider (users who already saved Gemini or
+OpenAI keep that choice until they pick the matcher and press Test and save).
+Test calls the matcher's `/health`. Photos are always processed one at a time.
+
+Contract the matcher must implement (pokescan's `pokescan.serve` does):
+
+| Route | Purpose |
+| --- | --- |
+| `POST /identify?session_lang=en\|de&debug=0\|1` | multipart `file`; returns the JSON below |
+| `GET /health` | `{ok, bundle_version, ...}`; `ok: false` fails the settings test |
+| `GET /bundle` | supported sets, shown in Scanner Settings |
+| `GET /ref/{print_id}` | reference image for a candidate |
+| `GET /trace/{trace_id}/{plane\|overlay}.webp` | debug artefacts for `debug=1` requests |
+
+```jsonc
+{
+  "matcher": {"name": "pokescan", "commit": "8f0ff3b", "bundle": "v12"},
+  "state": "IDENTIFIED",   // IDENTIFIED | CONFIRM_LANGUAGE | AMBIGUOUS | POSSIBLY_UNSUPPORTED_SET
+                           // | NOT_IN_CATALOG | NO_CARD | CARD_BACK | TOO_BLURRY
+  "confident": true,
+  "hint": null,
+  "candidates": [{"print_id": "en:sv03.5-043", "tcg_card_id": "sv03.5-043", "lang": "en",
+                  "set_id": "sv03.5", "number": "043", "name": "Oddish",
+                  "rarity": "Common", "score": 0.91, "margin": 0.12}],
+  "language": {...}, "number": {...}, "twin": {...}, "flags": {...},
+  "geometry": {"quad": [[x, y], ...], "source": "primary", "image_size": [w, h]},
+  "timings_ms": {...}, "trace_id": "..."
+}
+```
+
+`lang` is a TCGdex language code (`zh-tw`, `ja`, …) and `tcg_card_id` a TCGdex
+card id, so candidates map directly to PokéCollector card ids
+(`<tcg_card_id>_<lang>`). Candidates the local catalogue has not synced are
+still offered; adding one imports it from TCGdex on demand. Every non-confident
+state still shows its closest candidates for review.
+
+Queue behavior: an unreachable matcher or a 502/503/504 answer waits and
+retries automatically (honouring `Retry-After`); a timeout or a 4xx answer
+fails that photo with the matcher's message, and **Retry** re-queues it.
+
 ## Queue and error behavior
 
 Provider-specific errors are translated into the same scanner states:

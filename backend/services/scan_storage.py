@@ -206,6 +206,7 @@ async def create_scan_job(
     uploads: list,
     *,
     batch_modes: list[bool] | None = None,
+    session_lang: str | None = None,
 ) -> ScanJob:
     """Validate and persist a job without retaining any original upload bytes."""
     if not uploads:
@@ -224,6 +225,7 @@ async def create_scan_job(
         created_at=now,
         updated_at=now,
         expires_at=now + datetime.timedelta(days=SCAN_RETENTION_DAYS),
+        session_lang=session_lang,
     )
     db.add(job)
     db.flush()
