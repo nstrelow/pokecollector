@@ -122,6 +122,7 @@ def recover_expired_leases(db: Session, *, now: datetime.datetime | None = None)
         item.next_attempt_at = now
         item.retry_reason = None
         item.recognized = None
+        item.matcher_result = None
         item.lease_token = None
         item.lease_expires_at = None
         item.error = "Processing was interrupted and will resume automatically."
@@ -281,6 +282,7 @@ def complete_claim(db: Session, claim: ClaimedScanItem, result: dict) -> bool:
     item.status = "done"
     item.recognized = result.get("recognized")
     item.matches = result.get("matches")
+    item.matcher_result = result.get("_matcher")
     item.error = None
     item.lease_token = None
     item.lease_expires_at = None
@@ -309,6 +311,7 @@ def complete_claim_group(
             item.batch_mode = False
             item.recognized = None
             item.matches = None
+            item.matcher_result = None
             item.next_attempt_at = now
             item.retry_reason = None
         else:
@@ -488,6 +491,16 @@ async def default_scan_processor(
     if user is None or not user.is_active:
         raise PermanentScanError("The scan owner is no longer an active user.")
     provider = get_provider(db, user_id)
+    if provider.name == "external":
+        return await _external_scan(
+            db,
+            user_id,
+            image_bytes,
+            content_type,
+            provider=provider,
+            job_id=job_id,
+            item_id=item_id,
+        )
     require_scanner_capability_mode(db, user_id, provider.name, provider.model())
     api_key = provider.credential(db, user_id)
     if provider.requires_credential() and not api_key:
@@ -549,6 +562,70 @@ async def default_scan_processor(
         trace.save()
 
 
+async def _external_scan(
+    db: Session,
+    user_id: int,
+    image_bytes: bytes,
+    content_type: str,
+    *,
+    provider,
+    job_id: int | None,
+    item_id: int | None,
+) -> dict:
+    """One photo through the external matcher; no text extraction, no matching.
+
+    Failure mapping for the queue: an unreachable or 502-504 matcher backs off
+    and retries (TransientScanError), a timeout or a 4xx fails the item with
+    the matcher's message, and a malformed answer uses the normal bounded
+    recognition retries.
+    """
+    from services import external_matcher
+    from services.scan_trace import create_scan_trace
+
+    session_lang = None
+    if job_id is not None:
+        job = db.get(ScanJob, job_id)
+        session_lang = job.session_lang if job is not None else None
+    trace = create_scan_trace(
+        db,
+        user_id,
+        mode="single",
+        job_id=job_id,
+        item_id=item_id,
+        filename="sanitized-scan.jpg",
+        provider=provider.name,
+        model=provider.model(),
+    )
+    trace.set_image(image_bytes)
+    try:
+        return await external_matcher.recognize_with_matcher(
+            db,
+            image_bytes,
+            content_type,
+            session_lang=session_lang,
+            trace=trace,
+        )
+    except external_matcher.MatcherUnavailableError as exc:
+        raise TransientScanError(
+            str(exc),
+            retry_after_seconds=exc.retry_after_seconds,
+            retry_reason="matcher_unavailable",
+        ) from None
+    except (
+        external_matcher.MatcherTimeoutError,
+        external_matcher.MatcherRejectedError,
+        external_matcher.MatcherNotConfiguredError,
+    ) as exc:
+        raise PermanentScanError(str(exc)) from None
+    except external_matcher.MatcherResponseError as exc:
+        raise RecognitionScanError(str(exc)) from None
+    except Exception as exc:
+        trace.record_error(str(getattr(exc, "detail", exc)))
+        raise
+    finally:
+        trace.save()
+
+
 async def default_composite_processor(
     db: Session,
     user_id: int,
@@ -579,6 +656,10 @@ async def default_composite_processor(
     if user is None or not user.is_active:
         raise PermanentScanError("The scan owner is no longer an active user.")
     provider = get_provider(db, user_id)
+    if provider.name == "external":
+        # Composite grids are an LLM technique. Unresolved positions make
+        # complete_claim_group() requeue every photo for per-item processing.
+        return [None] * len(images)
     request_timeout_seconds = resolve_scanner_request_timeout(
         db, user_id, provider.name
     )
@@ -867,6 +948,7 @@ def retry_scan_item(db: Session, item: ScanJobItem) -> ScanJobItem:
     item.lease_expires_at = None
     item.recognized = None
     item.matches = None
+    item.matcher_result = None
     item.error = None
     item.batch_mode = False
     item.updated_at = now

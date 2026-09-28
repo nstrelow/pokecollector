@@ -33,8 +33,10 @@ from services.scan_trace import (
     trace_deletion_available,
 )
 
+from services import external_matcher
 from services.scan_providers import (
     DEFAULT_OPENAI_BASE_URL,
+    EXTERNAL,
     GEMINI,
     OPENAI,
     MODEL_PATTERN,
@@ -268,15 +270,22 @@ def get_settings(db: Session = Depends(get_db), current_user: User = Depends(get
     return _get_user_settings(db, current_user.id)
 
 
-def _scanner_key_name(provider: str) -> str:
+def _scanner_key_name(provider: str) -> str | None:
+    if provider == EXTERNAL:
+        # The matcher token is installation config (EXTERNAL_MATCHER_TOKEN).
+        return None
     return "gemini_api_key" if provider == GEMINI else "openai_api_key"
 
 
 def _scanner_requires_key(provider: str) -> bool:
+    if provider == EXTERNAL:
+        return False
     return provider == GEMINI or openai_requires_key()
 
 
-def _user_setting(db: Session, user_id: int, key: str) -> UserSetting | None:
+def _user_setting(db: Session, user_id: int, key: str | None) -> UserSetting | None:
+    if not key:
+        return None
     return db.query(UserSetting).filter(
         UserSetting.user_id == user_id, UserSetting.key == key
     ).first()
@@ -320,6 +329,19 @@ def _administrator_scanner_summary() -> dict:
                 "models": allowed_models(OPENAI),
                 "requires_api_key": openai_requires_key(),
             },
+            {
+                "id": EXTERNAL,
+                "label": provider_label(EXTERNAL),
+                "enabled": external_matcher.matcher_enabled(),
+                "endpoint_type": "custom",
+                "endpoint": (
+                    _safe_endpoint_summary(external_matcher.matcher_url())
+                    if external_matcher.matcher_enabled()
+                    else None
+                ),
+                "models": allowed_models(EXTERNAL),
+                "requires_api_key": False,
+            },
         ],
     }
 
@@ -348,10 +370,15 @@ def _scanner_configuration(db: Session, user_id: int, *, is_admin: bool = False)
             "requires_api_key": _scanner_requires_key(provider),
             "api_key_configured": key_configured,
             "endpoint_type": (
-                "hosted"
-                if provider == GEMINI or openai_base_url() == DEFAULT_OPENAI_BASE_URL
-                else "custom"
+                "custom"
+                if provider == EXTERNAL
+                else (
+                    "hosted"
+                    if provider == GEMINI or openai_base_url() == DEFAULT_OPENAI_BASE_URL
+                    else "custom"
+                )
             ),
+            "kind": "matcher" if provider == EXTERNAL else "llm",
             "key_help_url": provider_key_help_url(provider),
             "setup_help_url": SCANNER_PROVIDER_GUIDE_URL,
         }
@@ -485,8 +512,9 @@ def _persist_scanner_draft(
         SCANNER_REQUEST_TIMEOUT_SETTINGS[provider],
         str(request_timeout_seconds),
     )
-    if data.api_key is not None or data.clear_api_key:
-        _upsert_user_setting(db, user_id, _scanner_key_name(provider), credential)
+    key_name = _scanner_key_name(provider)
+    if key_name and (data.api_key is not None or data.clear_api_key):
+        _upsert_user_setting(db, user_id, key_name, credential)
 
 
 def _persist_scanner_capability(
@@ -572,6 +600,10 @@ async def test_scanner_configuration(
         require_ready=True,
         allow_unverified_custom_model=True,
     )
+    if provider == EXTERNAL:
+        return await _test_external_matcher(
+            data, db, current_user, model, custom_model, request_timeout_seconds
+        )
     candidate = ScanProvider(provider, model)
     # Use the same selected response budget as real scans so a slow local model
     # is not rejected by the setup test before users can enable it.
@@ -671,6 +703,94 @@ async def test_scanner_configuration(
         "saved": data.save_on_success,
         "visual_verification": capability_mode == SCANNER_CAPABILITY_FULL,
     }
+
+
+async def _test_external_matcher(
+    data: ScannerConfigurationUpdate,
+    db: Session,
+    current_user: User,
+    model: str,
+    custom_model: bool,
+    request_timeout_seconds: int,
+) -> dict:
+    """The external matcher's probe is its /health endpoint, not an image test.
+
+    A successful probe is persisted the same way as an LLM test so the
+    settings status logic stays provider-agnostic; the stored proof is
+    informational because scanner_capability_mode() never requires it here.
+    """
+    try:
+        health = await external_matcher.health()
+    except external_matcher.ExternalMatcherError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if health.get("ok") is False:
+        raise HTTPException(
+            status_code=502,
+            detail="The external card matcher reports that it is not ready.",
+        )
+    if data.save_on_success:
+        _persist_scanner_draft(
+            db,
+            current_user.id,
+            data,
+            EXTERNAL,
+            model,
+            "",
+            custom_model,
+            request_timeout_seconds,
+        )
+        _persist_scanner_capability(
+            db, current_user.id, EXTERNAL, model, SCANNER_CAPABILITY_FULL
+        )
+        db.commit()
+    return {
+        "status": "ready",
+        "saved": data.save_on_success,
+        "visual_verification": True,
+        "health": health,
+    }
+
+
+@router.get("/scanner/external")
+async def get_external_matcher_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Proxy the external matcher's /health and /bundle for Scanner Settings.
+
+    Each half fails independently: a matcher that is up but has no bundle
+    endpoint still reports its health.
+    """
+    from api.auth import multi_user_enabled
+
+    if current_user.role != "admin" and multi_user_enabled(db):
+        raise HTTPException(status_code=403, detail="Admin only")
+    if not external_matcher.matcher_enabled():
+        return {
+            "configured": False,
+            "label": provider_label(EXTERNAL),
+            "health": None,
+            "bundle": None,
+            "error": None,
+        }
+    result = {
+        "configured": True,
+        "label": provider_label(EXTERNAL),
+        "endpoint": _safe_endpoint_summary(external_matcher.matcher_url()),
+        "health": None,
+        "bundle": None,
+        "error": None,
+    }
+    try:
+        result["health"] = await external_matcher.health()
+    except external_matcher.ExternalMatcherError as exc:
+        result["error"] = str(exc)
+        return result
+    try:
+        result["bundle"] = await external_matcher.bundle()
+    except external_matcher.ExternalMatcherError as exc:
+        result["error"] = str(exc)
+    return result
 
 
 @router.get("/tcgdex-languages")

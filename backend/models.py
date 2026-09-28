@@ -715,6 +715,8 @@ class ScanJob(Base):
     finished_at = Column(DateTime)
     expires_at = Column(DateTime, nullable=False, index=True)
     error_message = Column(Text)
+    # en/de hint forwarded to the external card matcher; NULL for LLM jobs.
+    session_lang = Column(String, nullable=True)
 
     items = relationship(
         "ScanJobItem",
@@ -755,6 +757,8 @@ class ScanJobItem(Base):
     lease_expires_at = Column(DateTime, nullable=True, index=True)
     recognized = Column(JSON)
     matches = Column(JSON)
+    # External matcher debug blob (its response minus candidates); NULL otherwise.
+    matcher_result = Column(JSON)
     error = Column(Text)
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_at = Column(DateTime, default=func.now(), nullable=False)

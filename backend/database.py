@@ -548,6 +548,11 @@ def _run_migrations(conn):
         )""",
         "ALTER TABLE scan_job_items ADD COLUMN IF NOT EXISTS batch_mode BOOLEAN NOT NULL DEFAULT FALSE",
         "ALTER TABLE scan_job_items ADD COLUMN IF NOT EXISTS retry_reason VARCHAR",
+        # External card matcher (pokescanner): the per-job en/de session
+        # language forwarded to the matcher, and the matcher's debug blob
+        # (full response minus candidates) for the review debug panel.
+        "ALTER TABLE scan_jobs ADD COLUMN IF NOT EXISTS session_lang VARCHAR",
+        "ALTER TABLE scan_job_items ADD COLUMN IF NOT EXISTS matcher_result JSON",
         "CREATE INDEX IF NOT EXISTS ix_scan_jobs_user_id ON scan_jobs(user_id)",
         "CREATE INDEX IF NOT EXISTS ix_scan_jobs_status ON scan_jobs(status)",
         "CREATE INDEX IF NOT EXISTS ix_scan_jobs_expires_at ON scan_jobs(expires_at)",

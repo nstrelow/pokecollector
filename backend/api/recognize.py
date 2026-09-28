@@ -1488,6 +1488,32 @@ async def _recognize_with_provider(
         raise
 
 
+async def _recognize_with_external_matcher(
+    db: Session,
+    image_bytes: bytes,
+    content_type: str,
+    *,
+    trace: ScanTrace | None = None,
+) -> dict:
+    """Direct (non-queued) scan through the external matcher.
+
+    The queue maps matcher failures itself (services/scan_queue.py); this path
+    translates them to HTTP statuses for the interactive endpoint.
+    """
+    from services import external_matcher
+
+    try:
+        return await external_matcher.recognize_with_matcher(
+            db, image_bytes, content_type, trace=trace
+        )
+    except external_matcher.MatcherUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except external_matcher.MatcherTimeoutError as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from None
+    except external_matcher.ExternalMatcherError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from None
+
+
 async def recognize_sanitized_card(
     db: Session,
     user_id: int,
@@ -1509,6 +1535,8 @@ async def recognize_sanitized_card(
     fallback attempt.
     """
     provider = get_provider(db, user_id)
+    if provider.name == "external":
+        return await _recognize_with_external_matcher(db, image_bytes, content_type, trace=trace)
 
     def notify_recognized(card_info: dict, *, fallback_used: bool) -> None:
         card_info["_gemini_fallback_used"] = fallback_used

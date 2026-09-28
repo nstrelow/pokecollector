@@ -33,19 +33,30 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from models import User, UserSetting
+from services.external_matcher import (
+    EXTERNAL,
+    matcher_enabled as external_matcher_enabled,
+    matcher_label as external_matcher_label,
+)
 
 logger = logging.getLogger(__name__)
 
 GEMINI = "gemini"
 OPENAI = "openai"
 SCANNER_PROVIDER_SETTING = "scanner_provider"
+# EXTERNAL (services/external_matcher.py) is a non-LLM matcher: its "model" is
+# the administrator's EXTERNAL_MATCHER_LABEL, it needs no credential, and it has
+# no capability probe. It still gets rows in these maps so settings code can
+# treat every provider uniformly.
 SCANNER_MODEL_SETTINGS = {
     GEMINI: "scanner_model_gemini",
     OPENAI: "scanner_model_openai",
+    EXTERNAL: "scanner_model_external",
 }
 SCANNER_REQUEST_TIMEOUT_SETTINGS = {
     GEMINI: "scanner_request_timeout_gemini",
     OPENAI: "scanner_request_timeout_openai",
+    EXTERNAL: "scanner_request_timeout_external",
 }
 SCANNER_REQUEST_TIMEOUT_OPTIONS = (30, 60, 120, 180)
 DEFAULT_SCANNER_REQUEST_TIMEOUT_SECONDS = SCANNER_REQUEST_TIMEOUT_OPTIONS[0]
@@ -53,10 +64,12 @@ MAX_SCANNER_REQUEST_TIMEOUT_SECONDS = SCANNER_REQUEST_TIMEOUT_OPTIONS[-1]
 SCANNER_CUSTOM_MODEL_SETTINGS = {
     GEMINI: "scanner_custom_model_gemini",
     OPENAI: "scanner_custom_model_openai",
+    EXTERNAL: "scanner_custom_model_external",
 }
 SCANNER_CAPABILITY_SETTINGS = {
     GEMINI: "scanner_capability_gemini",
     OPENAI: "scanner_capability_openai",
+    EXTERNAL: "scanner_capability_external",
 }
 SCANNER_CAPABILITY_FULL = "full"
 SCANNER_CAPABILITY_DEGRADED = "degraded"
@@ -125,6 +138,8 @@ def provider_label(provider: str) -> str:
     """Return an administrator-controlled display label, never raw markup."""
     if provider == GEMINI:
         return "Gemini"
+    if provider == EXTERNAL:
+        return external_matcher_label()
     fallback = "OpenAI" if openai_base_url() == DEFAULT_OPENAI_BASE_URL else "OpenAI-compatible"
     configured = " ".join((os.environ.get("OPENAI_PROVIDER_LABEL") or "").split())
     if not configured or len(configured) > 60 or any(ord(char) < 32 for char in configured):
@@ -135,6 +150,8 @@ def provider_label(provider: str) -> str:
 def provider_key_help_url(provider: str) -> str | None:
     if provider == GEMINI:
         return GEMINI_API_KEY_HELP_URL
+    if provider == EXTERNAL:
+        return None
     if openai_base_url() == DEFAULT_OPENAI_BASE_URL:
         return OPENAI_API_KEY_HELP_URL
     return None
@@ -154,17 +171,32 @@ def installation_model(provider: str) -> str:
         from api.recognize import get_gemini_model
 
         return get_gemini_model()
+    if provider == EXTERNAL:
+        return external_matcher_label()
     return openai_model()
 
 
 def allowed_models(provider: str) -> list[str]:
     if provider == GEMINI:
         return _allowed_models("GEMINI_ALLOWED_MODELS", installation_model(provider))
+    if provider == EXTERNAL:
+        # One matcher per installation; the label must still satisfy
+        # MODEL_PATTERN, so fall back to the default label when it does not.
+        label = installation_model(provider)
+        return [label] if MODEL_PATTERN.fullmatch(label) else ["pokescan"]
     return _allowed_models("OPENAI_ALLOWED_MODELS", installation_model(provider))
 
 
 def enabled_providers() -> tuple[str, ...]:
-    return (GEMINI, OPENAI) if openai_enabled() else (GEMINI,)
+    providers = (GEMINI, OPENAI) if openai_enabled() else (GEMINI,)
+    if external_matcher_enabled():
+        providers = (EXTERNAL, *providers)
+    return providers
+
+
+def default_provider() -> str:
+    """The installation default: the external matcher when one is configured."""
+    return EXTERNAL if external_matcher_enabled() else GEMINI
 
 
 def _capability_endpoint_fingerprint(provider: str) -> str:
@@ -204,6 +236,11 @@ def scanner_capability_mode(
     obtained from a different server.
     """
     if provider == GEMINI:
+        return SCANNER_CAPABILITY_FULL
+    if provider == EXTERNAL:
+        # Not an LLM, so there is no image-comparison capability to prove. The
+        # endpoint is administrator configuration like Gemini's; /health is the
+        # operational probe and a down matcher fails scans retryably.
         return SCANNER_CAPABILITY_FULL
     if user_id is None:
         return None
@@ -326,7 +363,7 @@ def configured_provider_name(db: Session, user_id: int | None) -> str | None:
         .first()
     )
     value = ((row.value if row else "") or "").strip().lower()
-    return value if value in {GEMINI, OPENAI} else None
+    return value if value in {GEMINI, OPENAI, EXTERNAL} else None
 
 
 def gemini_fallback_enabled(db: Session, user_id: int | None) -> bool:
@@ -361,7 +398,7 @@ def resolve_provider_name(
     """
     value = configured_provider_name(db, user_id)
     if value is None:
-        return GEMINI
+        return default_provider()
     if value not in enabled_providers():
         if require_enabled:
             raise HTTPException(
@@ -371,7 +408,7 @@ def resolve_provider_name(
                     "test an available provider in Scanner Settings before scanning."
                 ),
             )
-        return GEMINI
+        return default_provider()
     return value
 
 
@@ -731,6 +768,13 @@ class ScanProvider:
     def is_gemini(self) -> bool:
         return self.name == GEMINI
 
+    @property
+    def is_external(self) -> bool:
+        return self.name == EXTERNAL
+
+    def is_llm(self) -> bool:
+        return not self.is_external
+
     def model(self) -> str:
         return self._chosen_model or installation_model(self.name)
 
@@ -743,7 +787,9 @@ class ScanProvider:
 
         if self.is_gemini:
             return get_gemini_key(db, user_id=user_id)
-        if user_id is None:
+        if self.is_external or user_id is None:
+            # The matcher's bearer token is installation config, never a
+            # per-user credential.
             return ""
         row = (
             db.query(UserSetting)
@@ -753,9 +799,13 @@ class ScanProvider:
         return ((row.value if row else "") or "").strip()
 
     def requires_credential(self) -> bool:
+        if self.is_external:
+            return False
         return True if self.is_gemini else openai_requires_key()
 
     def missing_credential_message(self) -> str:
+        if self.is_external:
+            return "The external card matcher is not configured."
         if self.is_gemini:
             return "Kein Gemini API Key konfiguriert. Bitte in den Einstellungen eintragen."
         return "No OpenAI API key configured. Add one in Settings first."
@@ -781,6 +831,13 @@ class ScanProvider:
         Usage is whatever the provider reports, or None. Callers record it for
         diagnostics and must not depend on its shape.
         """
+        if self.is_external:
+            # Guard, not a feature: every call site branches on is_external
+            # first. A prompt must never reach the OpenAI URL by fall-through.
+            raise HTTPException(
+                status_code=400,
+                detail="The external card matcher does not accept text prompts.",
+            )
         if self.is_gemini:
             from api.recognize import build_gemini_generate_url, post_gemini_generate
 
