@@ -8,6 +8,11 @@ RUN npm ci
 COPY VERSION /VERSION
 COPY frontend/ .
 
+# Optional link to the standalone live-camera scanner (docs/POKESCANNER-PLAN.md §7);
+# Vite inlines it at build time, empty hides the link.
+ARG VITE_LIVE_SCANNER_URL=""
+ENV VITE_LIVE_SCANNER_URL=${VITE_LIVE_SCANNER_URL}
+
 RUN cp public/robots-block.txt public/robots.txt \
     && npm run build
 
