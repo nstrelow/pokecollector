@@ -46,9 +46,23 @@ describe('matcher debug helpers', () => {
   it('builds timing segments against the declared total', () => {
     const { segments, total } = timingSegments({ localize: 100, retrieve: 300, total: 500 })
     expect(total).toBe(500)
-    expect(segments.map(s => [s.key, s.percent])).toEqual([['localize', 20], ['retrieve', 60]])
+    expect(segments.map(s => [s.key, s.percent])).toEqual([['localize', 20], ['retrieve', 60], ['__other', 20]])
     expect(timingSegments({ a: 1, b: 3 }).total).toBe(4)
     expect(timingSegments(null).segments).toEqual([])
+  })
+
+  it('never draws total and shows the unaccounted remainder as "other"', () => {
+    const fixture = { frame_gate: 3, localize: 90, rectify: 4, thumb_head: 20, retrieve: 310, ocr: 60, fuse: 2, twin: 15, total: 504 }
+    const exact = timingSegments(fixture)
+    expect(exact.segments.map(s => s.key)).toEqual(['frame_gate', 'localize', 'rectify', 'thumb_head', 'retrieve', 'ocr', 'fuse', 'twin'])
+    expect(exact.sum).toBe(504)
+    expect(exact.segments.reduce((acc, s) => acc + s.percent, 0)).toBeCloseTo(100)
+
+    const withOverhead = timingSegments({ ...fixture, total: 600 })
+    const last = withOverhead.segments.at(-1)
+    expect(last).toMatchObject({ key: '__other', ms: 96, remainder: true })
+    expect(withOverhead.segments.some(s => s.key === 'total')).toBe(false)
+    expect(withOverhead.segments.reduce((acc, s) => acc + s.percent, 0)).toBeCloseTo(100)
   })
 
   it('recognises external items and both artefact spellings', () => {

@@ -1949,6 +1949,7 @@ const en = {
     margin: 'Margin to the next candidate',
     timings: 'Timings',
     noTimings: 'No timings reported',
+    otherTiming: 'other',
     total: 'Total',
     settingsTitle: 'External matcher',
     settingsDesc: 'Image matcher used for scans instead of an AI model.',

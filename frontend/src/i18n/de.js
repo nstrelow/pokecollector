@@ -1922,6 +1922,7 @@ const de = {
     margin: 'Abstand zum nächsten Kandidaten',
     timings: 'Laufzeiten',
     noTimings: 'Keine Laufzeiten gemeldet',
+    otherTiming: 'Sonstiges',
     total: 'Gesamt',
     settingsTitle: 'Externer Matcher',
     settingsDesc: 'Bildabgleich, der Scans statt eines KI-Modells erkennt.',

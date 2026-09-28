@@ -100,8 +100,9 @@ function round1(value) {
 }
 
 // Stacked timings bar: every numeric stage except the total, in payload order.
-// The total is the payload's own when present (it includes overhead the
-// stages do not), else the sum.
+// `total` is never a segment. The total is the payload's own when present;
+// when it exceeds the sum of the stages (overhead the stages do not cover),
+// the gap is appended as a trailing `remainder` segment ("other").
 export function timingSegments(timings) {
   if (!timings || typeof timings !== 'object') return { segments: [], total: 0 }
   const segments = Object.entries(timings)
@@ -110,12 +111,20 @@ export function timingSegments(timings) {
   const sum = segments.reduce((acc, segment) => acc + segment.ms, 0)
   const declared = Number(timings.total)
   const total = Number.isFinite(declared) && declared > 0 ? declared : sum
+  const remainder = total - sum
+  if (segments.length && remainder > 0.5) {
+    segments.push({ key: '__other', ms: remainder, remainder: true })
+  }
   const scale = Math.max(total, sum) || 1
   return {
     total,
+    sum,
     segments: segments.map(segment => ({ ...segment, percent: (segment.ms / scale) * 100 })),
   }
 }
+
+// Remainder segment colour: neutral so it never reads as a pipeline stage.
+export const TIMING_REMAINDER_COLOR = 'rgba(255,255,255,0.25)'
 
 export const TIMING_COLORS = [
   '#3b82f6', '#22c55e', '#eab308', '#f97316', '#e3000b',
