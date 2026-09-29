@@ -131,7 +131,11 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
    build ships with the service; then bundle v13.
 7. P2 (on-device int8 CLIP, hybrid retrieval): plan §7. Start with the int8 export + gate
    re-run (≈1 h) — that alone tells whether P2 is viable.
-8. Later: multi-card spread mode, video-mode temporal model inside pokescan (today it's only in
+8. **Candidate strip redesign** (owner request 2026-09-29): horizontal swipeable strip of
+   compact candidate tiles (number, set, flag + lang, confidence pill), ≤ 25 % of the
+   viewfinder — spec in `POKESCANNER-PLAN.md` §7 P1.1; live page first, then
+   `MatcherDebugPanel`.
+9. Later: multi-card spread mode, video-mode temporal model inside pokescan (today it's only in
    the page), German-vintage refs, fr/es/it/pt galleries, upstream PR of the external-matcher
    contract to Git-Romer.
 
