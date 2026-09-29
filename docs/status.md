@@ -1,6 +1,6 @@
 # pokescanner — status
 
-Read this first. Plan: `docs/POKESCANNER-PLAN.md`. Ops/runbook: `docs/POKESCANNER-OPS.md`. Latency plan: `docs/POKESCANNER-LATENCY.md`. P2 plan + pickup prompt: `docs/POKESCANNER-P2.md`. Workflow: `docs/agent-workflow.md`.
+Read this first. Plan: `docs/POKESCANNER-PLAN.md`. Ops/runbook: `docs/POKESCANNER-OPS.md`. Latency plan: `docs/POKESCANNER-LATENCY.md`. P2 plan + pickup prompt: `docs/POKESCANNER-P2.md`. Backlog: `docs/POKESCANNER-TODO.md`. Workflow: `docs/agent-workflow.md`.
 
 ## State on 2026-09-29 ~01:00 (end of the overnight run)
 
