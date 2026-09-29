@@ -129,15 +129,25 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
    page; note fps, misfires, wrong cards, UX papercuts here. This decides everything below.
 3. Trusted-proxy auth (removes the token box) — owner approval needed.
 4. ~~Trace retention~~ done 09-29 (90 d / 10 GB). Still open: a Gatus/Beszel disk alert for CT 140.
-5. **Latency (in progress 2026-09-29, 3 lanes)** — plan in `docs/POKESCANNER-LATENCY.md`:
-   lane 1 more cores/threads (+ P-core pin test), lane 2 calibrated static-int8 tower behind the
-   accuracy gate, lane 3 early-fire consensus + client frame gate + pipelining. Baseline 953 ms
-   server (765 ms retrieve), target ≤ 400 ms server / ≤ 1.5 s per card.
+5. **Latency (2026-09-29, done, `docs/POKESCANNER-LATENCY.md` Results)**: lane 1 → CT 140 has
+   8 cores (PVE `cores` is a cpuset; 4 meant 2 physical P-cores), threads stay 4, ~25–35 % faster
+   retrieve; lane 3 → live 948cfda: early fire on 2 strong frames (score ≥ 0.85, margin ≥ 0.08),
+   client blur/motion gate, pipelining (idle: `Service.identify` holds one lock); lane 2 → **no
+   server int8 tower passes the gate** (best: −0.76 pp; plain static int8 collapses on block 6's
+   MLP input). Measured on a quiet host: fp32 identify p50 586 ms. Remaining levers: re-embed the
+   gallery with an int8 tower (1–2 h CPU, untested), or two recognizer instances (+1 GB RAM).
+   Re-measure on an idle host (pause the cardphotos re-scan).
 6. Merge pokescan `live` into `plan-a` (pure addition + torch-free refactor) so the next gallery
    build ships with the service; then bundle v13.
-7. **P2 (on-device int8 CLIP, hybrid retrieval)**: full plan + pickup prompt in
-   `docs/POKESCANNER-P2.md` (S0–S7). Can start now with S1–S4; S5 waits for `live-ui` +
-   `live-fast` to be in `origin/live`.
+7. **P2 (on-device int8 CLIP, hybrid retrieval) — built, not merged/deployed**: pokescan
+   `p2-device` 12a5ad6 (= `p2-server` JSON `/identify` + `/live/models/*` + `p2-client` worker,
+   geometry ports, vendored ORT-web 1.29.0 + S5 page wiring with device-mode toggle and automatic
+   fallback; 85 py + 55 node tests green). Export on `p2-export`: `clip_b16_224.int8wo.onnx`
+   84 MB + `unet-m3.single.onnx`; cosine ≥ 0.998 but **gate −0.76 pp = one ja frame became a
+   tap → OWNER DECISION pending** (accept + re-baseline, or re-embed gallery). Then: bundle with
+   `--client-tower/--client-localizer`, real-tower fidelity test, cache-bust the worker import
+   (`/live/p2/*` is cached 1 day, `live.js` isn't), merge into `live`, deploy, phone test.
+   Plan + pickup prompt: `docs/POKESCANNER-P2.md`.
 8. **Candidate strip redesign** (owner request 2026-09-29): horizontal swipeable strip of
    compact candidate tiles (number, set, flag + lang, confidence pill), ≤ 25 % of the
    viewfinder — spec in `POKESCANNER-PLAN.md` §7 P1.1; live page first, then
