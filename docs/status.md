@@ -187,3 +187,5 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
 ## P2 / P3
 
 P2: see item 7 above. P3: not started (plan §7).
+
+- 2026-09-29 (pokescan 6cb28c1): live page gets a focus-aware target guide (corner ticks sized for 1.25 × the camera's closest focus on Chrome Android, else 65 % / iPhone 50 % of the box), "Move back a little — too close to focus" / "Move closer" hints, 1920 px camera frames (upload cap 1280 -> 1920), an 8 px gap under the preview ring, and per-stage device timings + EPs + shader-f16 in the drawer.
