@@ -182,6 +182,7 @@ Code deployed on CT 140 (denils label `3c4df5e`); bundle `/tank/pokescan/bundle-
    Follow-ups: `POKESCANNER_LIVE_ISOLATED` (threaded Wasm; check `/ref` images through Caddy
    under COEP first), deterministic RANSAC so device/server quads agree exactly.
    Plan + results: `docs/POKESCANNER-P2.md`.
+   **GPU rectify + CLIP prep** (TODO item 3) live as pokescan abc5c90 on 2026-09-29: on-device frames with a WebGPU tower warp and prep on the GPU (bit-exact vs the JS path on SwiftShader); phone check pending (drawer: `prep gpu`, perf `warp gpu`).
 8. **Candidate strip redesign** (owner request 2026-09-29): horizontal swipeable strip of
    compact candidate tiles (number, set, flag + lang, confidence pill), ≤ 25 % of the
    viewfinder — spec in `POKESCANNER-PLAN.md` §7 P1.1; live page first, then
