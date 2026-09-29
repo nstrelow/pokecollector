@@ -46,10 +46,9 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
 
 ### Owner TODOs
 
-1. **Authentik → Outposts → "authentik Embedded Outpost" → edit → set
-   `authentik_host_browser: https://auth.nilss.dev`** (the classifier refused this global
-   change). Until then the SSO redirect from scan.nilss.dev goes to
-   `http://10.0.1.10:9000/…`, which only works on the LAN.
+1. ~~Embedded outpost host~~ done 09-29 09:40: `authentik_host` + `authentik_host_browser` =
+   `https://auth.nilss.dev` (owner-approved), server restarted; `/live` now redirects to
+   `https://auth.nilss.dev/application/o/authorize/…`.
 2. Live-page adds: `POKESCANNER_COLLECTION_URL=http://10.0.1.10:8000`,
    `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (a pokecollector user; the service re-logs in
    on 401) and `POKESCANNER_COLLECTION_UI_URL=https://poke.nilss.dev/scans` in the agenix
