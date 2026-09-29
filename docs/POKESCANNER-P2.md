@@ -166,5 +166,4 @@ frame ms, gate delta, deployed rev, anything left out.
 * Headless Chromium end to end with the real models: the JSON body the page sends identifies
   the same print as the multipart upload (`test_camera_device_mode_real_models_match_server`).
 * Cache-busting: own `/live/p2/*.js` → `no-cache`, vendored ORT stays 1 day.
-* Deployed: code live 0396254 on CT 140; bundle-v12p2 built; **mount repoint pending**
-  (manual `pct set 140 -mp0 …bundle-v12p2… && pct reboot 140`). Phone test after that.
+* Deployed: code live 0396254 on CT 140; bundle-v12p2 mounted as mp0 (2026-09-29), manifest 200. Phone test pending.

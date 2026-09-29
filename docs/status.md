@@ -139,17 +139,13 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
    Re-measure on an idle host (pause the cardphotos re-scan).
 6. Merge pokescan `live` into `plan-a` (pure addition + torch-free refactor) so the next gallery
    build ships with the service; then bundle v13.
-7. **P2 (on-device int8 CLIP, hybrid retrieval) — code DEPLOYED (live 0396254, CT 140), device
-   models NOT yet served**: owner accepted the int8wo gate (98.48 %, one tap flip) 2026-09-29.
-   Bundle `/tank/pokescan/bundle-v12p2` is built and verified (v12 + `client/`, bundle sha
-   unchanged 0fac0cf6b1b1), but repointing CT 140's mp0 needs a manual step (the agent's
-   `pct set`/`pct reboot` was blocked):
-   `pct set 140 -mp0 /tank/pokescan/bundle-v12p2,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140`
-   then check `curl -H "Authorization: Bearer …" http://10.0.1.40:8000/live/models/manifest.json`
-   (200 with tower + localizer) and update the denils comments in `hosts/pokescanner.nix` /
-   `features/pokescan-serve.nix` to bundle-v12p2 (rollback: repoint at bundle-v12).
-   Until then the page shows "device models not in this bundle" and uses JPEG uploads as before.
-   **Phone test after the mount**: open scan.nilss.dev/live, enable *Device mode* in the drawer
+7. **P2 (on-device int8 CLIP, hybrid retrieval) — DEPLOYED (live 0396254, CT 140), device
+   models served**: owner accepted the int8wo gate (98.48 %, one tap flip) 2026-09-29.
+   CT 140 mp0 → `/tank/pokescan/bundle-v12p2` (v12 + `client/`, bundle sha unchanged
+   0fac0cf6b1b1) since 2026-09-29; `/live/models/manifest.json` 200 with tower + localizer,
+   model files served `immutable`; denils d97fd91 (comments). Rollback: repoint mp0 at
+   bundle-v12 + `pct reboot 140` (the page then self-disables device mode).
+   **Phone test**: open scan.nilss.dev/live, enable *Device mode* in the drawer
    if it is off, watch the download progress (~115 MB incl. the 26 MB wasm, once; cached
    after), the EP in the drawer (`webgpu` or `wasm`) and `dev N ms` in the perf line. Expect
    Android Chrome WebGPU ~0.3–0.6 s/frame; iOS Safari runs Wasm single-threaded (no COOP/COEP
