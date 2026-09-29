@@ -38,14 +38,25 @@ frame"):
   (total 617 → 411 ms); tower alone (int8wo, Wasm, 1 thread) 1 row 2550 ms vs 2 rows 5045 ms.
   On the phone the tower stage should roughly halve — confirm with the drawer's device timings.
 
-### 2. GPU-friendly tower file
+### 2. ~~GPU-friendly tower file~~ — CODE DONE 2026-09-29 (pokescan `9996b47`); bundle switch pending
 
-The int8 weight-only tower (`clip_b16_224.int8wo`, 88 MB) is `DequantizeLinear` on weight
-initialisers feeding fp32 MatMuls. ORT does not constant-fold DQ nodes, so the WebGPU EP
-likely dequantises ~86 M weights every frame, or runs some ops on the CPU. Options:
-an fp16 file for WebGPU when the adapter has `shader-f16` (~172 MB download, native on the
-GPU), or a MatMulNBits/int4-style format the WebGPU EP runs directly (download stays small).
-Keep int8wo as the Wasm/CPU file. Needs the fidelity gate again (cosine vs fp32, gate top-1).
+The int8wo tower is `DequantizeLinear` on weights; ORT re-runs the DQ every frame on WebGPU.
+Now `manifest.towers = {webgpu_f16, webgpu, wasm}`: fp16 (173 MB) for adapters with
+`shader-f16`, fp32 (345 MB, the server's own file) for WebGPU without it, int8wo (88 MB) for
+Wasm/CPU incl. Firefox Android. Picked in `p2/select.js`; the download sheet shows the chosen
+file's size; the drawer shows `tower … (fp16|fp32|int8wo[, X failed])`; a GPU tower that fails
+to load falls back to the int8wo file on Wasm. JSON `/identify` with `debug=1` returns
+`parity` (server fp32 cosine per rotation) to check a phone's fp16 output against the server.
+
+Fidelity (200 testset-v2 planes, cosine vs fp32): fp16 file on ORT CPU p50 0.999999 /
+min 0.999993; fp16 emulation p50 0.999998 / min 0.99999; int8wo p50 0.99945 / min 0.99805.
+Gate (fp16 emulation): top-1 99.24 % = fp32, 0 silent wrong, 0 false accepts; recovers the
+int8 flip ja:M5-075. Real ORT-web WebGPU EP (SwiftShader, headless): fp32 cosine 1.000000;
+fp16 unverified on a real f16 GPU (SwiftShader has no `shader-f16`) — use the debug parity.
+
+Pending: switch CT 140 to `/tank/pokescan/bundle-v12p3` (main session):
+`pct set 140 -mp0 /tank/pokescan/bundle-v12p3,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140`.
+Until then the manifest has `towers: {wasm}` only and behaviour is unchanged.
 
 ### 3. Move rectify + CLIP prep onto the GPU
 
