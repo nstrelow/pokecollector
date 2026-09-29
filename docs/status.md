@@ -44,6 +44,12 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
   `/live*` and `/collection/*` → 10.0.1.40:8000 with ForwardAuth, catch-all → 10.0.1.40:8000
   (bearer). Verified: `/health` 200, `/live` 302 → Authentik, `/outpost.goauthentik.io/ping` 204.
 
+### GPU towers 2026-09-29 (pokescan `9996b47`, TODO item 2)
+
+Code deployed on CT 140 (denils label `3c4df5e`); bundle `/tank/pokescan/bundle-v12p3` built
+(fp16/fp32/int8wo towers) but NOT mounted yet — see `POKESCANNER-TODO.md` item 2 for the
+`pct set` command. Rollback: mp0 back to `bundle-v12p2`.
+
 ### Owner TODOs
 
 1. ~~Embedded outpost host~~ done 09-29 09:40: `authentik_host` + `authentik_host_browser` =
