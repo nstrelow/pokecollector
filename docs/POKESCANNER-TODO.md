@@ -79,17 +79,22 @@ the crop encode.
 The device pipeline is strictly serial per frame. Run the localizer of frame N+1 while the
 tower works on frame N (two in flight inside the worker, the page drops stale results).
 
-### 5. Multi-threaded Wasm for phones without WebGPU
+### 5. ~~Multi-threaded Wasm for phones without WebGPU~~ — DONE 2026-09-29 (denils `9d76c64`)
 
-`POKESCANNER_LIVE_ISOLATED=1` (COOP/COEP) enables threads for the CPU fallback (Firefox
-Android, older iOS). Check that `/ref/*` thumbnails still load through Caddy/Cloudflare
-with COEP before switching it on.
+`POKESCANNER_LIVE_ISOLATED=1` (COOP/COEP) is on. Headless check: page, `/ref` thumbnails
+(CORP), worker and ORT threads (`min(hardwareConcurrency, 4)`) all fine, nothing blocked;
+Wasm tower 1 thread 2.6-3.7 s -> 4 threads 1.0-1.25 s. Not verifiable through
+Cloudflare/Authentik from the server side (all subresources are same-origin, so it should be
+fine): if Firefox Android shows a blank page or no thumbnails, unset the env var.
 
 ## Other open items
 
 - Rotate the API token (it was pasted into a chat once), recipe in `POKESCANNER-OPS.md`.
-- Deterministic RANSAC in JS and Python (same PRNG) so device and server quads match exactly.
-- Move the en/de session-language switch into the drawer and default it to the last
-  confirmed Latin-script language (it only breaks en/de look-alike ties; ja/ko/zh/th are
-  detected by script).
-- Disk alert for CT 140 traces (sweeper caps at 10 GB, rootfs 20 GB).
+- ~~Deterministic RANSAC in JS and Python~~ — DONE 2026-09-29 (pokescan `e263e43`): the
+  device fit uses a JS port of numpy's `default_rng`; 57/59 real masks bit-identical, max
+  0.1 mask px. Server unchanged. Follow-up idea: the server's RANSAC is seed-sensitive
+  (median 0.6 % quad spread across seeds), a least-squares refinement would steady it.
+- ~~Move the en/de switch into the drawer~~ — DONE 2026-09-29 (pokescan `02ebafe`):
+  "Default for English/German look-alikes", follows the last added Latin-script print.
+- ~~Disk alert for CT 140 traces~~ — DONE 2026-09-29 (pokescan `fdfa89d`, denils `34b3150`):
+  `/health` reports `disk.free_pct`; Gatus "Pokescanner disk" alerts via ntfy below 15 %.

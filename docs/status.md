@@ -183,6 +183,7 @@ Code deployed on CT 140 (denils label `3c4df5e`); bundle `/tank/pokescan/bundle-
    under COEP first), deterministic RANSAC so device/server quads agree exactly.
    Plan + results: `docs/POKESCANNER-P2.md`.
    **GPU rectify + CLIP prep** (TODO item 3) live as pokescan abc5c90 on 2026-09-29: on-device frames with a WebGPU tower warp and prep on the GPU (bit-exact vs the JS path on SwiftShader); phone check pending (drawer: `prep gpu`, perf `warp gpu`).
+   **Misc TODOs live 2026-09-29 (pokescan e263e43, denils 9d76c64/34b3150)**: COOP/COEP on (`POKESCANNER_LIVE_ISOLATED=1`, Wasm CPU fallback 4 threads, tower ~3 s -> ~1.1 s headless; Cloudflare/Authentik path unverified — unset the env var if Firefox Android shows a blank page); en/de switch moved to the drawer, follows the last added Latin-script print; device RANSAC uses numpy's PRNG (quads match the server exactly); Gatus "Pokescanner disk" ntfy alert < 15 % free (`/health` `disk`).
 8. **Candidate strip redesign** (owner request 2026-09-29): horizontal swipeable strip of
    compact candidate tiles (number, set, flag + lang, confidence pill), ≤ 25 % of the
    viewfinder — spec in `POKESCANNER-PLAN.md` §7 P1.1; live page first, then
