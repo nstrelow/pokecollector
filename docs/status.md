@@ -28,49 +28,36 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
   session toggle + live link; verified (1018 backend / 337 frontend tests, security pass,
   Docker build arg). Not deployed.
 
-### Owner TODOs, in order
+### Deployed 2026-09-29 09:15–09:30 (owner said "deploy it yourself")
 
-1. **Deploy the branch to CT 100** — the classifier refused to let an agent do a production
-   deploy. Recipe (from the Proxmox host; `TS=$(date +%Y%m%d-%H%M)`):
-   0. Docker on CT 100 has been STOPPED since 2026-09-27 13:51 UTC (containers survive via
-      live-restore; komodo-mongo is probably wedged on stdout): `pct exec 100 -- rc-service
-      docker start`, then `docker ps`. If komodo-mongo stays unresponsive, restart just it.
-   1. Backups: `docker exec pokemon-postgres pg_dump -U pokemon -Fc pokemon_tcg >
-      /root/pokecollector-backups/pre-pokescanner-$TS.dump`; `tar czf
-      /root/pokecollector-backups/stack-src-pre-pokescanner-$TS.tgz --exclude=pokecollector/data
-      --exclude=pokecollector/backups pokecollector` (from /etc/komodo/stacks); `docker tag
-      pokecollector-backend:latest pokecollector-backend:pre-pokescanner` (+ frontend).
-   2. `git -C /srv/repos/pokecollector archive --format=tar.gz -o /tmp/pokescanner.tgz
-      fork/pokescanner && pct push 100 /tmp/pokescanner.tgz /tmp/pokescanner.tgz`.
-   3. In `/etc/komodo/stacks/pokecollector`: `rm -rf backend frontend && tar xzf
-      /tmp/pokescanner.tgz` (keep `.env`, `compose.tz.yml`, `data/`, `backups/`, `.git`).
-   4. Append to `.env` (back it up first): `EXTERNAL_MATCHER_URL=http://10.0.1.40:8000`,
-      `EXTERNAL_MATCHER_TOKEN=<ssh root@10.0.1.40 cat /run/agenix/pokescanner-env>`,
-      `EXTERNAL_MATCHER_LABEL=pokescan`, `EXTERNAL_MATCHER_TIMEOUT=20`,
-      `LIVE_SCANNER_URL=https://scan.nilss.dev/live`.
-   5. `docker compose -p pokecollector -f docker-compose.yml -f docker-compose.build.yml -f
-      compose.tz.yml build && … up -d` — always all three files (the plain compose file now
-      points at upstream ghcr images). Version jump 1.42.2 → 1.51.0, migrations are additive,
-      the backend writes its pre-upgrade backup to `./backups`.
-   6. Check `https://poke.nilss.dev/api/health`, then Scanner Settings → provider
-      "external" (pokescan) → Test → Save.
-   7. Don't let Komodo redeploy/pull this stack (its `file_paths` lack the build file); fix
-      `config.file_paths` in Mongo to include `docker-compose.build.yml` per `host.md`.
-   Rollback: compose down (no `-v`), untar the stack-src backup, retag `pre-pokescanner` →
-   `latest`, `up -d --no-build`; DB restore from the dump only if the old code fails.
-2. **OPNsense os-caddy** (GUI): `scan.nilss.dev` → `http://10.0.1.40:8000`; forward-auth to
-   the Authentik embedded outpost on `/live*` and `/collection/*` only.
-3. **Authentik** (GUI): Proxy provider (forward-auth, single app) for
-   `https://scan.nilss.dev` + application + embedded outpost.
-4. **Live-page adds**: set `POKESCANNER_COLLECTION_URL=http://10.0.1.10:8000`,
-   `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (a pokecollector user; JWT is 7 d so the
-   service re-logs in) and `POKESCANNER_COLLECTION_UI_URL=https://poke.nilss.dev/scans` in
-   the agenix env secret + `pokescan-serve.nix`, then `update-pokescanner`.
-5. **Try it on a real phone** (iOS Safari / Android Chrome) — the page was only run in
-   headless Chromium with a faked camera. Then scan ~20 of your PRE/full-art cards and note
-   latency + wrong results here.
-6. pokescan: decide whether `live` merges into plan-a (it's a pure addition + the torch-free
-   refactor; 830 tests green).
+- CT 100: Docker daemon restarted (was stopped since 09-27); backups
+  `/root/pokecollector-backups/{pre-pokescanner-20260929-0917.dump, stack-src-pre-pokescanner-20260929-0917.tgz}`,
+  images tagged `pokecollector-{backend,frontend}:pre-pokescanner`; branch extracted into
+  `/etc/komodo/stacks/pokecollector`, `.env` (+`.env.bak.20260929-0917`) got the
+  `EXTERNAL_MATCHER_*` + `LIVE_SCANNER_URL` lines; built + `up -d` with all three compose
+  files; `/api/health` ok, pre-upgrade backup 1.42.2→1.51.0 written by the backend;
+  scanner provider `external`/pokescan tested + saved (single-user mode).
+- Authentik: ProxyProvider 32 "pokescan live" (forward_single, https://scan.nilss.dev),
+  application `pokescan-live`, attached to the embedded outpost.
+- OPNsense Caddy (config.xml, backup `/conf/config.xml.bak-pokescan-20260929`): subdomain
+  `scan.nilss.dev` (158ae50d…) + 4 handles: `/outpost.goauthentik.io/*` → 10.0.1.10:9000,
+  `/live*` and `/collection/*` → 10.0.1.40:8000 with ForwardAuth, catch-all → 10.0.1.40:8000
+  (bearer). Verified: `/health` 200, `/live` 302 → Authentik, `/outpost.goauthentik.io/ping` 204.
+
+### Owner TODOs
+
+1. **Authentik → Outposts → "authentik Embedded Outpost" → edit → set
+   `authentik_host_browser: https://auth.nilss.dev`** (the classifier refused this global
+   change). Until then the SSO redirect from scan.nilss.dev goes to
+   `http://10.0.1.10:9000/…`, which only works on the LAN.
+2. Live-page adds: `POKESCANNER_COLLECTION_URL=http://10.0.1.10:8000`,
+   `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (a pokecollector user; the service re-logs in
+   on 401) and `POKESCANNER_COLLECTION_UI_URL=https://poke.nilss.dev/scans` in the agenix
+   env secret + `pokescan-serve.nix`, then `update-pokescanner`.
+3. Komodo: don't redeploy/pull the `pokecollector` stack from Komodo — its `file_paths`
+   lack `docker-compose.build.yml` (fix in Mongo per `host.md`, or leave it and deploy by hand).
+4. Try `/live` on a real phone, then scan ~20 PRE/full-art cards and note results here.
+5. pokescan: decide whether `live` merges into plan-a.
 
 ### Lane log (wave 1)
 
