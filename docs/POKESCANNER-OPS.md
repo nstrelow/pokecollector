@@ -40,6 +40,10 @@ design in `docs/POKESCANNER-PLAN.md`.
   is bearer-only. **The live page therefore needs the token in the browser** (`?token=` once,
   stored in localStorage) — see "Known problems" in `status.md` for the planned fix.
 
+## Caching
+
+Cloudflare fronts scan.nilss.dev and ignored `no-cache` on the live page's `.js`/`.css` (stale UI after deploys). Since pokescan 9dfab0c `/live` is `no-store` and points at `/live/v/<content hash>/live.{js,css}` (immutable); relative module imports and the p2 worker inherit the prefix, the vendored ORT redirects to its stable `/live/p2/ort/` (1 day). A deploy therefore changes every asset URL automatically.
+
 ## Common operations
 
 **Update the service code** (pokescan branch `live` or its successor):
