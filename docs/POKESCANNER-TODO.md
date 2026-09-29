@@ -109,6 +109,23 @@ Wasm tower 1 thread 2.6-3.7 s -> 4 threads 1.0-1.25 s. Not verifiable through
 Cloudflare/Authentik from the server side (all subresources are same-origin, so it should be
 fine): if Firefox Android shows a blank page or no thumbnails, unset the env var.
 
+### 6. Slow on-device model load — UI + telemetry DONE 2026-09-29 (pokescan `f613790`, denils `7a0a8c0`); phone check open
+
+Symptom: "Loading the model…" for minutes on the owner's Android (5G). CT 140's log shows the
+19:40-19:55 loads never fetched a model file (bytes came from Cache Storage; ORT wasm requested
+~3 s after the manifest), so the time was the GPU set-up (adapter / session create / warm-up),
+shown as one indeterminate bar whose sliding chunk looked like "15 %/30 %". The 17:28 load of
+the same fp16 tower was ready in <25 s, so the minutes-long cases are a stall on the phone's
+GPU side, not the download.
+Shipped: stage + percentage ("Downloading 42 % · 73 / 173 MB · 6.1 MB/s", "Cached ✓",
+"Checking…", "Waiting for the GPU…", "Preparing GPU… 12 s · tower"), same line in the drawer;
+cache hits trusted by verified marker + size (no 173 MB re-hash); streamed download into one
+buffer + tee'd cache.put (errors reported); one requestAdapter per page with a 20 s give-up;
+`storage.persist()`; drawer telemetry (source, MB, s, MB/s, put error, set-up step times,
+a previous load that never finished); `POST /live/loadlog` -> `journalctl -u pokescanner | grep loadlog`.
+- [ ] Owner: reload /live on the phone, note the stage/seconds it shows; then read the
+  `loadlog` lines (event ready/stall/failed/cut-off, `steps`, `stages`) to see which step is slow.
+
 ## Prices — SHIPPED 2026-09-29 (pokescan `68be661`, denils `aa30b8a`)
 
 The live page shows market prices for the identified card.
