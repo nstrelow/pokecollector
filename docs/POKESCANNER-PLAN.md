@@ -262,6 +262,29 @@ pokescanner, PWA manifest + service worker from P2 on.
 * Debug drawer (swipe up): plane, flags, number reading, timings — the same fields as §5.3.
 * Language toggle en/de in the header (persisted in localStorage).
 
+### P1.1 — Candidate strip (owner request 2026-09-29)
+
+Replaces the stacked top-3 list. Goal: show *more* candidates while taking *less* of the
+viewfinder, and make each candidate scannable at a glance.
+
+* **Layout**: one horizontal, swipeable strip pinned to the bottom edge of the viewfinder
+  (scroll-snap, momentum). Fixed height ≤ ~25 % of the portrait viewport (safe-area aware),
+  so the video never shifts when candidates change; a skeleton row shows while a request
+  is in flight.
+* **Card tile** (thumb 56–72 px wide, 2:3): `/ref/{print_id}` thumbnail; below it the
+  **card number** `043/198` (monospace-ish, primary), the **set id** (`sv03.5`, small caps,
+  secondary), the **language** as a flag emoji + code (`🇩🇪 de`; text fallback when the
+  platform has no flag glyphs), and the **confidence** as a coloured pill
+  (`87 %`: ≥ 80 green, 50–80 amber, < 50 grey).
+* **Hierarchy**: the top candidate is first, slightly larger and outlined, with a "best"
+  marker; the rest are uniform. Consensus/lock state is shown on the strip, not in a
+  separate banner.
+* **Interaction**: tap = select (opens the add sheet with that print); long-press or the
+  ⓘ button = details drawer (plane, flags, number reading, timings). 44 px tap targets,
+  `aria-label` per tile, keyboard focusable.
+* **Same treatment later** for pokecollector's `MatcherDebugPanel` candidate list (§5.3),
+  so both surfaces read the same way.
+
 ### P2 — on-device embedding, hybrid retrieval (1–2 days, no retraining)
 
 * Export: `scripts/export_int8_weightonly.py` → `clip_b16_224.int8.onnx` (~85 MB); plus
