@@ -180,3 +180,9 @@ Left:
   on the phone (expect ~45-120 ms, ~70-100 KB, "worker"). Proposed, not done: ORT
   `allow_spinning=0` on the server sessions (replica retrieve 336 -> 214 ms), CT 140 +1 GB RAM
   (it swapped 429 MB); keep 4 threads (6/8 are slower on its P/E-core mix).
+- ~~On-device load hung at "session localizer" (Firefox + Chrome Android)~~ — FIXED 2026-09-29
+  (pokescan `8f83476`, denils `e0a4849`): ORT's day-cached pthread script from before
+  `LIVE_ISOLATED` had no COEP, so its pthread workers never started under COEP. Runtime now
+  loads from `/live/p2/ort/<file>?coi=1` (no 308), asset version carries `-coi`, and a 10 s
+  watchdog restarts a stuck threaded start with 1 thread (remembered per UA). Drawer shows
+  `wasm ×4` / `wasm ×1 (threads hung, retried)`. Phone check: expect ready with `wasm ×N`.
