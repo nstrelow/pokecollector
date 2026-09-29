@@ -133,3 +133,22 @@ p2-device, push to origin; append Results to POKESCANNER-P2.md and a status.md l
 fork/pokescanner (git pull --ff-only first). Report: what works on which EP, download size, per-
 frame ms, gate delta, deployed rev, anything left out.
 ```
+
+## Results
+
+### S2 tower export + gate (2026-09-29, pokescan branch `p2-export`)
+
+* `clip_b16_224.int8wo.onnx`: 87.8 MB (83.7 MiB), single file, ir 8, opset 17, no custom
+  domains; 50 per-channel `DequantizeLinear` feeding MatMul/Gemm/Conv, otherwise stock ops
+  (LayerNormalization, Softmax, Erf, Gather, Reshape, Transpose, Slice, Where). Loads in
+  ORT 1.30 CPU; not yet tried in ORT-web (S4).
+* `unet-m3.single.onnx`: 0.61 MiB, opset 18 (Conv/Clip/Resize/Concat/Shape); max abs diff
+  vs the two-file model 0.0.
+* Fidelity, 200 real planes: cosine to fp32 p50 0.99945, p1 0.99873 (>= 0.999 PASS);
+  full_top1 on 132 planes 98.48 % = fp32, 0 moved.
+* Gate (v12 bundle, tower swapped, gallery stays fp32): top-1 99.24 -> 98.48 (-0.76 pp, one
+  frame: ja:M5-075 IDENTIFIED at margin 0.041 became AMBIGUOUS with the same-art M5-108
+  first), AMBIGUOUS 13 -> 13, wrong-confident 0 -> 0. **Acceptance (within 0.5 pp): FAIL by
+  one frame; safety OK.** The cost is a tap. Options: accept + re-baseline, or re-embed the
+  gallery with the int8 tower (not run). Details: pokescan `docs/PLAN-A-LOG.md`,
+  `data/exp/results/p2_export.json`.
