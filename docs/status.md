@@ -155,6 +155,9 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
    frame removed; camera full-screen edge to edge, top bar / HUD / result panel / strip float
    over it on translucent scrims; match feedback = quad overlay + thin edge glow; candidate
    tiles 72/82 px (62/70 short screens) as translucent glass cards.
+   **Live UI a0a4508**: owner correction — all controls solid again (top bar, switch, badge,
+   perf, progress card, status row, buttons); only the strip background is see-through
+   (rgba .35) where it overlaps the video; tiles solid at 72/82 px.
    **Phone test**: open scan.nilss.dev/live, tap *On-device* on the viewfinder switch,
    confirm the download, watch the progress card (~115 MB incl. the 26 MB wasm, once; cached
    after), the GPU/CPU tag on the switch and `dev N ms` in the perf line. Expect
