@@ -151,6 +151,10 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
    GPU/CPU tag + "CPU may be slower" hint, a perf line naming the path; a card-shaped aim frame
    sits between HUD and result panel (the strip never covers it); strip thumbs 78/88 px,
    flag+lang chip on the thumb, best = ★.
+   **Live UI 8358d73 (2026-09-29)**: owner: "the bigger they scan the card the better" → aim
+   frame removed; camera full-screen edge to edge, top bar / HUD / result panel / strip float
+   over it on translucent scrims; match feedback = quad overlay + thin edge glow; candidate
+   tiles 72/82 px (62/70 short screens) as translucent glass cards.
    **Phone test**: open scan.nilss.dev/live, tap *On-device* on the viewfinder switch,
    confirm the download, watch the progress card (~115 MB incl. the 26 MB wasm, once; cached
    after), the GPU/CPU tag on the switch and `dev N ms` in the perf line. Expect
