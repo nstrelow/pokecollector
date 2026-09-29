@@ -1,6 +1,6 @@
 # pokescanner — status
 
-Read this first. Plan: `docs/POKESCANNER-PLAN.md`. Ops/runbook: `docs/POKESCANNER-OPS.md`. Latency plan: `docs/POKESCANNER-LATENCY.md`. Workflow: `docs/agent-workflow.md`.
+Read this first. Plan: `docs/POKESCANNER-PLAN.md`. Ops/runbook: `docs/POKESCANNER-OPS.md`. Latency plan: `docs/POKESCANNER-LATENCY.md`. P2 plan + pickup prompt: `docs/POKESCANNER-P2.md`. Workflow: `docs/agent-workflow.md`.
 
 ## State on 2026-09-29 ~01:00 (end of the overnight run)
 
@@ -135,8 +135,9 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
    server (765 ms retrieve), target ≤ 400 ms server / ≤ 1.5 s per card.
 6. Merge pokescan `live` into `plan-a` (pure addition + torch-free refactor) so the next gallery
    build ships with the service; then bundle v13.
-7. P2 (on-device int8 CLIP, hybrid retrieval): plan §7. Start with the int8 export + gate
-   re-run (≈1 h) — that alone tells whether P2 is viable.
+7. **P2 (on-device int8 CLIP, hybrid retrieval)**: full plan + pickup prompt in
+   `docs/POKESCANNER-P2.md` (S0–S7). Can start now with S1–S4; S5 waits for `live-ui` +
+   `live-fast` to be in `origin/live`.
 8. **Candidate strip redesign** (owner request 2026-09-29): horizontal swipeable strip of
    compact candidate tiles (number, set, flag + lang, confidence pill), ≤ 25 % of the
    viewfinder — spec in `POKESCANNER-PLAN.md` §7 P1.1; live page first, then
