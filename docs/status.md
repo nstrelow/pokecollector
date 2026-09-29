@@ -139,15 +139,27 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
    Re-measure on an idle host (pause the cardphotos re-scan).
 6. Merge pokescan `live` into `plan-a` (pure addition + torch-free refactor) so the next gallery
    build ships with the service; then bundle v13.
-7. **P2 (on-device int8 CLIP, hybrid retrieval) — built, not merged/deployed**: pokescan
-   `p2-device` 12a5ad6 (= `p2-server` JSON `/identify` + `/live/models/*` + `p2-client` worker,
-   geometry ports, vendored ORT-web 1.29.0 + S5 page wiring with device-mode toggle and automatic
-   fallback; 85 py + 55 node tests green). Export on `p2-export`: `clip_b16_224.int8wo.onnx`
-   84 MB + `unet-m3.single.onnx`; cosine ≥ 0.998 but **gate −0.76 pp = one ja frame became a
-   tap → OWNER DECISION pending** (accept + re-baseline, or re-embed gallery). Then: bundle with
-   `--client-tower/--client-localizer`, real-tower fidelity test, cache-bust the worker import
-   (`/live/p2/*` is cached 1 day, `live.js` isn't), merge into `live`, deploy, phone test.
-   Plan + pickup prompt: `docs/POKESCANNER-P2.md`.
+7. **P2 (on-device int8 CLIP, hybrid retrieval) — code DEPLOYED (live 0396254, CT 140), device
+   models NOT yet served**: owner accepted the int8wo gate (98.48 %, one tap flip) 2026-09-29.
+   Bundle `/tank/pokescan/bundle-v12p2` is built and verified (v12 + `client/`, bundle sha
+   unchanged 0fac0cf6b1b1), but repointing CT 140's mp0 needs a manual step (the agent's
+   `pct set`/`pct reboot` was blocked):
+   `pct set 140 -mp0 /tank/pokescan/bundle-v12p2,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140`
+   then check `curl -H "Authorization: Bearer …" http://10.0.1.40:8000/live/models/manifest.json`
+   (200 with tower + localizer) and update the denils comments in `hosts/pokescanner.nix` /
+   `features/pokescan-serve.nix` to bundle-v12p2 (rollback: repoint at bundle-v12).
+   Until then the page shows "device models not in this bundle" and uses JPEG uploads as before.
+   **Phone test after the mount**: open scan.nilss.dev/live, enable *Device mode* in the drawer
+   if it is off, watch the download progress (~115 MB incl. the 26 MB wasm, once; cached
+   after), the EP in the drawer (`webgpu` or `wasm`) and `dev N ms` in the perf line. Expect
+   Android Chrome WebGPU ~0.3–0.6 s/frame; iOS Safari runs Wasm single-threaded (no COOP/COEP
+   yet) → 1–2 s/frame. Fidelity (node, real models): int8 vs fp32 embedding cosine
+   0.9986–0.9995; JSON `/identify` == multipart print on fixtures. Known: device runs only the
+   primary U-Net, so cards the server finds only via the fallback localiser (2 of 12 fixtures)
+   show as "no card" on the device — the page then sends a JPEG at most every 2.5 s.
+   Follow-ups: `POKESCANNER_LIVE_ISOLATED` (threaded Wasm; check `/ref` images through Caddy
+   under COEP first), deterministic RANSAC so device/server quads agree exactly.
+   Plan + results: `docs/POKESCANNER-P2.md`.
 8. **Candidate strip redesign** (owner request 2026-09-29): horizontal swipeable strip of
    compact candidate tiles (number, set, flag + lang, confidence pill), ≤ 25 % of the
    viewfinder — spec in `POKESCANNER-PLAN.md` §7 P1.1; live page first, then
@@ -158,6 +170,4 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
 
 ## P2 / P3
 
-Not started. Plan §7. P2 = weight-only int8 CLIP export (`export_int8_weightonly.py`) +
-gate re-run + onnxruntime-web port of S1/rectify/CLIP preprocessing, hybrid retrieval via
-`POST /identify` JSON mode (still to add on the server).
+P2: see item 7 above. P3: not started (plan §7).

@@ -10,6 +10,7 @@ design in `docs/POKESCANNER-PLAN.md`.
 | pokescanner service (`pokescan.serve`) | CT 140 `pokescanner`, 10.0.1.40:8000, NixOS, 8 cores / 3 GB (cores 4 -> 8 on 2026-09-29, ORT threads stay 4) | denils (`modules/aspects/features/pokescan-serve.nix`, `hosts/pokescanner.nix`), `nix run .#update-pokescanner` | `/root/denils` |
 | pokescan source the service runs | `/tank/pokescan/src` (git checkout, branch `live`), bind-mounted ro at `/var/lib/pokescanner/src` | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
 | model bundle v12 | `/tank/pokescan/bundle-v12` (1.6 GB incl. `ref_thumbs_v12/`), ro at `/var/lib/pokescanner/bundle` | rebuilt with `scripts/export_serve_bundle.py --out <newdir>` from a pokescan worktree; new versions get a NEW dir, then change `bundleDir` in the nix file | pokescan |
+| model bundle v12p2 | `/tank/pokescan/bundle-v12p2` (1.6 GB: v12 + `client/clip_b16_224.int8wo.77fb9bf4698c.onnx` 88 MB + `client/unet-m3.single.5ab23c0916a2.onnx` 0.6 MB; same bundle sha 0fac0cf6b1b1) | built 2026-09-29 with `export_serve_bundle.py --client-tower … --client-localizer …`; **not mounted yet** — `pct set 140 -mp0 /tank/pokescan/bundle-v12p2,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140`; rollback = mp0 back to bundle-v12 | pokescan |
 | service secrets | denils `secrets/pokescanner-env.age` → `/run/agenix/pokescanner-env` (root 0400, read by systemd `EnvironmentFile`) | keys: `POKESCANNER_TOKEN` (API bearer), `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (pokecollector user `pokescanner`) | denils |
 | traces | CT 140 `/var/lib/pokescanner/traces/` (local disk, NOT backed up); one dir per `debug=1` identify: `trace.json` (full top-k, geometry), `source.jpg`, `plane.webp`, `overlay.webp` (~120–760 KB); no-card states keep only json + small overlay | swept by the service at startup + hourly: `POKESCANNER_TRACE_KEEP_DAYS` (90) then `POKESCANNER_TRACE_MAX_GB` (10), oldest first — knobs in `pokescan-serve.nix` (`traceKeepDays`, `traceMaxGb`) | pokescan `serve/app.py` `sweep_traces` |
 | CT 140 rootfs | `pool/subvol-140-disk-0`, **20 GB** since 2026-09-29 (was 8) | grow with `pct resize 140 rootfs <N>G` (online), then set `proxmox.disk` in `hosts/pokescanner.nix` and run a tofu `apply -refresh-only` in `~/.local/share/den-lxc/pokescanner` so `check-drift` is clean (never `provision-*`) | denils |
@@ -17,6 +18,17 @@ design in `docs/POKESCANNER-PLAN.md`.
 | public entry | OPNsense Caddy: `scan.nilss.dev` → 10.0.1.40:8000; `poke.nilss.dev` → 10.0.1.10:3000 | `/conf/config.xml` `<reverseproxy>` (subdomain `158ae50d…` + 4 handles), `configctl template reload OPNsense/Caddy && configctl caddy reload` | — |
 | SSO | Authentik on CT 100: ProxyProvider "pokescan live" (forward-auth single app), app `pokescan-live`, embedded outpost (`authentik_host` = https://auth.nilss.dev) | UI, or `docker exec authentik-server-1 ak shell -c '…'` | — |
 | monitoring | Gatus "Pokescanner" (vigil) → `/health` every 5 min; homepage tile (arr) | emitted by the denils feature aspect; `update-vigil` / `update-arr` after changes | denils |
+
+## P2 on-device assets (caching)
+
+* `/live/models/manifest.json` is `no-cache`; the model files carry their sha in the name and
+  are `immutable`. The worker checks the sha256 and keeps them in Cache Storage
+  (`pokescan-models-v<bundle_version>`).
+* `/live/p2/*.js` (worker, device, geometry, pipeline) are `no-cache` like `live.js`, so a
+  deploy never pairs a new page with a stale worker; only `/live/p2/ort/**` (vendored
+  onnxruntime-web, changes only with `VENDORED.md`) is `max-age=86400`.
+* These routes are GET-only: `curl -I` gets 405, use `curl -s -o /dev/null -D -`.
+* `POKESCANNER_LIVE_ISOLATED` (COOP/COEP → threaded Wasm) is still OFF.
 
 ## Auth model (read this before touching it)
 

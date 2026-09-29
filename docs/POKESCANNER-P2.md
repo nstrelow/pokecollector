@@ -152,3 +152,19 @@ frame ms, gate delta, deployed rev, anything left out.
   one frame; safety OK.** The cost is a tap. Options: accept + re-baseline, or re-embed the
   gallery with the int8 tower (not run). Details: pokescan `docs/PLAN-A-LOG.md`,
   `data/exp/results/p2_export.json`.
+
+### Owner decision + S6/S7 (2026-09-29, pokescan `live` 0396254)
+
+* **int8wo gate 98.48 % accepted as the device-mode baseline (owner 2026-09-29); reference
+  for device mode = `gate_cascade_p2.json`.** ("go with option one, accept the one tap flip")
+* S6 real-model fidelity (node + vendored ORT-web, Wasm EP, the worker's own
+  `processFrame`, 12 testset-v2 frames): localiser input bit-identical, sigmoid map within
+  6e-6; int8 embedding vs server fp32 on the same plane cosine **0.9986–0.9995** (min ≥ 0.99
+  PASS); quads differ 0–37 px on 2048 px frames (RANSAC RNG: mulberry32 vs PCG64), still the
+  same print; 2 cards found on the server only by the fallback localiser are "no card" on the
+  device → the page re-asks the server with a JPEG at most every 2.5 s.
+* Headless Chromium end to end with the real models: the JSON body the page sends identifies
+  the same print as the multipart upload (`test_camera_device_mode_real_models_match_server`).
+* Cache-busting: own `/live/p2/*.js` → `no-cache`, vendored ORT stays 1 day.
+* Deployed: code live 0396254 on CT 140; bundle-v12p2 built; **mount repoint pending**
+  (manual `pct set 140 -mp0 …bundle-v12p2… && pct reboot 140`). Phone test after that.
