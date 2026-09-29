@@ -109,6 +109,42 @@ Wasm tower 1 thread 2.6-3.7 s -> 4 threads 1.0-1.25 s. Not verifiable through
 Cloudflare/Authentik from the server side (all subresources are same-origin, so it should be
 fine): if Firefox Android shows a blank page or no thumbnails, unset the env var.
 
+## Prices — SHIPPED 2026-09-29 (pokescan `68be661`, denils `aa30b8a`)
+
+The live page shows market prices for the identified card.
+
+- **Source: TCGdex directly**, not pokecollector. pokecollector's prices come
+  from the same TCGdex `pricing` block, but only for cards it tracks
+  (collection/wishlist/binder), behind a login, and `GET /api/cards/{id}` for an
+  untracked card fetches TCGdex and writes a DB row, a side effect the scanner
+  should not cause. Scanner print ids (`en:sv03.5-043`) map 1:1 to TCGdex
+  `/{lang}/cards/{id}`.
+- **Endpoint:** `GET /price/{print_id}` on the scanner (bearer like `/identify`;
+  404 for unknown print ids without an upstream call). Returns
+  `cardmarket {unit, updated, trend, avg, low, avg1/7/30, reverse{...}}` and
+  `tcgplayer {unit, updated, variants{normal|holofoil|reverse-holofoil|…: market/low/mid/high}}`,
+  either `null` when there is no price (zeros are dropped, never shown as 0).
+- **Cache:** memory + `/var/lib/pokescanner/prices/prices.json`
+  (`POKESCANNER_PRICE_CACHE`), 18 h TTL (`_TTL_H`), "no such card" 6 h,
+  4 s timeout, one upstream call per print id, stale entry served on upstream
+  failure with a 2 min backoff. Sync route (threadpool), never on `/identify`'s path.
+- **UI:** the add sheet shows "Cardmarket trend · low · 30d", a rev. holo line,
+  "TCGplayer normal · rev. …" and "via TCGdex · dd.mm."; the top candidate tile
+  shows the trend in a small opaque badge (left, opposite the score pill) once
+  that card's price is known. Fetched only when the sheet opens (lock / pick /
+  snap / photo), cached per print id in the page.
+- **Coverage (sample of 15 per language):** en and de ~90% Cardmarket + all
+  TCGplayer (same product, so identical numbers across en/de/fr); ja ~50%
+  (half the ja prints are not in TCGdex at all), Cardmarket only; zh-tw ~60%
+  Cardmarket only, no TCGplayer.
+
+Left:
+- Variant awareness: the sheet shows normal + rev. holo side by side; tie the
+  headline to the variant picked in the sheet.
+- ja prints missing from TCGdex could fall back to the en sibling
+  (pokecollector's `apply_cross_language_fallbacks` idea), clearly labelled.
+- Price history / sparkline (pokecollector has `PriceHistory` for tracked cards).
+
 ## Other open items
 
 - Rotate the API token (it was pasted into a chat once), recipe in `POKESCANNER-OPS.md`.
