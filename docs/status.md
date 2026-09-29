@@ -85,8 +85,12 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
 3. **Engine, not plumbing:** one wild Lugia-ex photo got a wrong confident-looking top-1
    (Sadaija VMAX) with a loose outline; ~1.3–2 s/frame under host load; consensus needs 3
    agreeing frames ≈ 4–6 s per card at that rate. A quiet host should roughly halve it.
-4. **Traces grow forever** on CT 140's 8 GB rootfs (~300 KB each, every queue scan is `debug=1`).
-   No retention job yet.
+4. ~~Traces grow forever on an 8 GB rootfs~~ resolved 09-29 10:25: rootfs resized to
+   20 GB (`pct resize`, denils `proxmox.disk = 20`, tofu state refreshed, no drift); pokescan
+   `live` ced6edd sweeps traces at startup + hourly (`POKESCANNER_TRACE_KEEP_DAYS=90`,
+   `POKESCANNER_TRACE_MAX_GB=10`, oldest first) and NO_CARD/TOO_BLURRY/CARD_BACK traces keep
+   only json + a 640 px overlay (~20 KB). Traces were judged worth keeping: source frame at
+   work resolution + rectified plane + full top-k, which `matcher_result` doesn't have.
 5. **Komodo can clobber the pokecollector deploy** (stack `file_paths` lack the build file) and
    **Docker on CT 100 stops on its own** (was down 09-27 → 09-29; cause not found — check
    `/var/log/messages` next time).
@@ -124,7 +128,7 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
 2. Real-phone session: scan 20 PRE / full-art cards on `scan.nilss.dev/live` and on the queue
    page; note fps, misfires, wrong cards, UX papercuts here. This decides everything below.
 3. Trusted-proxy auth (removes the token box) — owner approval needed.
-4. Trace retention (e.g. 90 days on CT 140; pokecollector traces stay) + a Gatus disk check.
+4. ~~Trace retention~~ done 09-29 (90 d / 10 GB). Still open: a Gatus/Beszel disk alert for CT 140.
 5. Latency: re-measure on a quiet host; if still > 1 s, try `POKESCANNER_THREADS=8` on a 8-vCPU
    CT, or the int8 tower on the server too (same export as P2).
 6. Merge pokescan `live` into `plan-a` (pure addition + torch-free refactor) so the next gallery
