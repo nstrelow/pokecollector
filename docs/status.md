@@ -145,9 +145,15 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
    0fac0cf6b1b1) since 2026-09-29; `/live/models/manifest.json` 200 with tower + localizer,
    model files served `immutable`; denils d97fd91 (comments). Rollback: repoint mp0 at
    bundle-v12 + `pct reboot 140` (the page then self-disables device mode).
-   **Phone test**: open scan.nilss.dev/live, enable *Device mode* in the drawer
-   if it is off, watch the download progress (~115 MB incl. the 26 MB wasm, once; cached
-   after), the EP in the drawer (`webgpu` or `wasm`) and `dev N ms` in the perf line. Expect
+   **Live UI 73549fa (2026-09-29)**: after owner feedback (couldn't find the drawer toggle /
+   download) the viewfinder has a *Server | On-device* switch (synced with the drawer, same
+   `pokescan.device` key), a one-time download prompt with the size, an on-screen progress card,
+   GPU/CPU tag + "CPU may be slower" hint, a perf line naming the path; a card-shaped aim frame
+   sits between HUD and result panel (the strip never covers it); strip thumbs 78/88 px,
+   flag+lang chip on the thumb, best = ★.
+   **Phone test**: open scan.nilss.dev/live, tap *On-device* on the viewfinder switch,
+   confirm the download, watch the progress card (~115 MB incl. the 26 MB wasm, once; cached
+   after), the GPU/CPU tag on the switch and `dev N ms` in the perf line. Expect
    Android Chrome WebGPU ~0.3–0.6 s/frame; iOS Safari runs Wasm single-threaded (no COOP/COEP
    yet) → 1–2 s/frame. Fidelity (node, real models): int8 vs fp32 embedding cosine
    0.9986–0.9995; JSON `/identify` == multipart print on fixtures. Known: device runs only the
