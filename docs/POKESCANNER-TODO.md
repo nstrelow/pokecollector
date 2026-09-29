@@ -126,6 +126,19 @@ a previous load that never finished); `POST /live/loadlog` -> `journalctl -u pok
 - [ ] Owner: reload /live on the phone, note the stage/seconds it shows; then read the
   `loadlog` lines (event ready/stall/failed/cut-off, `steps`, `stages`) to see which step is slow.
 
+### 7. ~~Device frame ~430 ms (Pixel 9 Pro Fold)~~ — DONE 2026-09-29 (pokescan `e03d629`, denils `cbdbf3c`)
+
+- Live-frame localiser TTA 8 -> **4** (manifest `localizer.tta`; photos/server keep 8). Gate
+  (int8wo, live1, testset-v2 132 rows): 0 silent wrong, 0 false accepts, corner error = TTA 8;
+  TTA 2/1 rejected (2 wrong cards shown, +1 pp corner error). U-Net cost ~halves.
+- GPU input path: ImageBitmap -> GPU texture -> WGSL letterbox/TTA batch + warp; no
+  getImageData readback (bit-identical to JS on 40 frames, SwiftShader).
+- Crop encode on one reused CPU canvas; drawer "crop N KB" replaces the stale "0 KB".
+- Anonymous demo pacer: ~1 identify/s (0.5/s while locked/confident), Retry-After honoured.
+- [ ] Owner: retest on the phone; drawer `device` line should say `localiser webgpu (TTA 4)`
+  and `frame→GPU texture`; `device timings` worker line `decode ~0`, `readback` split from
+  `encode`; new `steps:` line = localize prep/wait/run/post + tower wait/run (lock waits).
+
 ## Prices — SHIPPED 2026-09-29 (pokescan `68be661`, denils `aa30b8a`)
 
 The live page shows market prices for the identified card.

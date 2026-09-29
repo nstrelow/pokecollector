@@ -65,6 +65,12 @@ Code deployed on CT 140 (denils label `3c4df5e`); bundle `/tank/pokescan/bundle-
 (fp16/fp32/int8wo towers) but NOT mounted yet — see `POKESCANNER-TODO.md` item 2 for the
 `pct set` command. Rollback: mp0 back to `bundle-v12p2`.
 
+### Device speed 2026-09-29 (pokescan `e03d629`, denils `cbdbf3c`)
+
+Deployed on CT 140: live TTA 4, GPU input path, cheaper crop encode, anonymous pacer
+(`POKESCANNER-TODO.md` item 7; pokescan `docs/PLAN-A-LOG.md` "on-device speed-ups").
+Phone retest pending.
+
 ### Owner TODOs
 
 1. ~~Embedded outpost host~~ done 09-29 09:40: `authentik_host` + `authentik_host_browser` =
