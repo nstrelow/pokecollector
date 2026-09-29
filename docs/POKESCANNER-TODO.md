@@ -16,6 +16,12 @@ The worker already times `decode · localize · rectify · tower · encode` (`p2
 Owner: open the drawer during a scan and screenshot the "device timings" row and the
 `shader-f16` flag. Pick the order of items 1–5 from that.
 
+Owner's numbers 2026-09-29 (fp16 tower, bundle-v12p3): 969 ms/frame = loc 234 · warp 179 ·
+clip 222 · srv 18, ~316 ms outside the worker stages. Since pokescan `f3d480f` the drawer also
+shows the page's side of a frame: `page: grab · bitmap · xfer · body · net` (grab = canvas copy,
+bitmap = createImageBitmap, xfer = worker round trip minus its own total, body = JSON build,
+net = /identify). Owner: screenshot both lines again.
+
 ### 1. ~~One rotation per live frame instead of two~~ — DONE 2026-09-29 (pokescan `1ac08da`)
 
 Live camera frames (device and server mode; Snap reuses them) embed exactly ONE view,
@@ -72,12 +78,28 @@ Time there (SwiftShader emulates the GPU on the CPU): JS warp+prep 225-343 ms vs
 + 5-7 ms readback. Expected on the owner's phone: ~200-250 ms off the 969 ms frame; the perf
 line now reads `warp gpu` (the GPU time is inside `clip`), the drawer `prep gpu` and a
 `readback` stage. Still on the CPU: the U-Net's letterbox/TTA/sigmoid + quad fit (`loc`) and
-the crop encode.
+the crop encode — both made cheaper in pokescan `f3d480f` (item 4).
 
-### 4. Overlap frames
+### 4. ~~Overlap frames~~ + cheaper encode/localize — DONE 2026-09-29 (pokescan `f3d480f`)
 
-The device pipeline is strictly serial per frame. Run the localizer of frame N+1 while the
-tower works on frame N (two in flight inside the worker, the page drops stale results).
+- **Overlap:** the worker runs frames concurrently; Wasm sessions each have a run lock, all
+  WebGPU sessions share one (two ORT runs on its device hang), GPU prep -> tower -> plane copy
+  is exclusive (shared buffers). The page keeps **2 device frames in flight when the tower is
+  on WebGPU** (1 on Wasm: no gain on one CPU). A frame's 3 s timeout grows by 3 s per frame in
+  flight with it. Tested: two different cards + an empty frame in flight each equal their solo
+  run (Wasm and SwiftShader GPU prep); without the GPU-prep lock that test fails.
+- **Crop encode:** JPEG 0.85 instead of WebP 0.8 — Chromium 9.6 vs 106 ms (83 vs 39 KB);
+  testset-v2 JSON-path tally identical to lossless and WebP.
+- **Localize JS:** cached dihedral gather maps, typed area-resize tables, one sigmoid+undo
+  pass; bit-identical. node: letterbox 71 -> 26, dihedral 33 -> 6, clip_prep 66 -> 30 ms.
+- Not measurable end to end here (the headless Wasm tower is 2 s on this host; SwiftShader
+  WebGPU timed out under load). Expected on the owner's phone with the GPU prep: ~0.5 s of
+  work per frame, period near the longest stage with 2 in flight -> **~2-3 fps**. Confirm
+  with the drawer's worker + page lines.
+- Also: the on-device outline offset (above/right of the card) was result latency — the quad
+  of a ~0.5-1 s old frame over live video. The outline now follows the scene (global luma
+  shift at 10 Hz, `track.js`) and hides when the scene changed.
+- Open, codec-independent: 2 IDENTIFIED-wrong on testset-v2's JSON live1 path (lossless too).
 
 ### 5. ~~Multi-threaded Wasm for phones without WebGPU~~ — DONE 2026-09-29 (denils `9d76c64`)
 
