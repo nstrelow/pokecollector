@@ -135,3 +135,27 @@ the nix file, update PLAN-A-LOG.
 ## Results
 
 (lanes append here)
+
+### Lane 3 (page round trips), 2026-09-29, pokescan `live` @ 948cfda, deployed
+
+- **What changed**: early fire (2 consecutive frames with score >= 0.85 and margin >= 0.08, else
+  3-of-5; `margin` was already in `/identify`), client frame gate (`framegate.js`: skip if 160 px
+  Laplacian variance < 40, or if < 3 mean-abs-luma from the last NO_CARD upload, re-ask after 5 s),
+  pipelining (`pipeline.js`: 2 in flight when `/health.threads >= 8`, results delivered in send
+  order), `enc ms` in the perf line + debug drawer. `live.js` touched only in the capture loop.
+- **Headless (fake camera, scripted /identify)**: strong card fires on frame 2 (was 3), weak card
+  (margin 0.03) on frame 3, static blurry frame = 0 uploads, static empty scene = 1 upload,
+  threads=12 fires on frame 2 with 2 in flight. Saves one full round trip (~1.2 s at today's
+  latency) for confident cards.
+- **Thresholds**: sharp testset photos have Laplacian variance >= 660, the same photos blurred
+  (sigma 1.5 % of long side) <= 37 -> `BLUR_MIN` 40. Strong rule on the 17 labelled testset frames:
+  5 strong, 0 strong-but-wrong (small sample; watch for a wrong early fire in real use).
+- **Encode**: `toBlob` median 21 ms for a noisy 1280x720 frame in software headless Chromium (a
+  phone with a HW JPEG encoder should be well under that). q0.7 vs q0.8 through the real service
+  on 87 photos: 21 % smaller but the decision changed on 14/87 (all borderline AMBIGUOUS /
+  CONFIRM_LANGUAGE frames) -> kept 0.8.
+- **Caveat for pipelining**: `Service.identify` holds a lock around the recognizer, so a 2nd
+  request only overlaps upload/decode/encode, not compute; the real win needs lane 1/2 or removing
+  the lock (ORT sessions can run concurrently at the cost of splitting the threads).
+- Not verified on a real phone. Deploy note: `/health.commit` comes from `commit =` in
+  `pokescan-serve.nix` (bumped to 948cfda), not from the git checkout.
