@@ -37,8 +37,60 @@ design in `docs/POKESCANNER-PLAN.md`.
 - pokecollector's backend calls `http://10.0.1.40:8000` over the LAN with the token
   (`EXTERNAL_MATCHER_TOKEN` in its `.env`).
 - On `scan.nilss.dev`, Caddy puts `/live*` and `/collection/*` behind Authentik; the rest
-  is bearer-only. **The live page therefore needs the token in the browser** (`?token=` once,
+  is bearer-only. **Until 2026-10-06T18:30Z `/live*` is public** (see "Public demo"). **The live page therefore needs the token in the browser** (`?token=` once,
   stored in localStorage) — see "Known problems" in `status.md` for the planned fix.
+
+## Public demo (temporary, until 2026-10-06T18:30:00Z)
+
+Owner-approved 2026-09-29. `POKESCANNER_PUBLIC_UNTIL` (denils `publicUntil`) makes the service
+answer visitors **without** the bearer on `POST /identify` and `GET /price/*` while
+`now < until`; checked per request, so it switches itself off at the timestamp (no restart).
+`/health.public = {active, until}`; the page (`demo.js`) runs as the demo when it has no token
+and `public.active`. Caddy: `/live*` forward-auth off (handle `2b59288c…`), `/collection/*`
+and `/outpost.goauthentik.io/*` unchanged.
+
+| | anonymous visitor | owner (bearer in localStorage) |
+|---|---|---|
+| `/live`, assets, device models, `/ref`, `/health` | yes (per-IP limits) | yes |
+| `/identify` | yes: `debug` ignored, **no trace**, 6 MB multipart / 1.5 MB JSON cap, 411 without Content-Length | yes, unchanged (debug/traces) |
+| `/price/*` | yes (6 burst, 30/min) | yes |
+| `/collection/*` | no: Caddy SSO 302 + bearer | adds need the SSO cookie: sheet shows "sign in" → `/collection/login` → SSO → back to `/live` |
+| `/trace/*`, `/bundle`, `/public/stats`, `/live/loadlog` | 401 | yes |
+
+Limits (`src/pokescan/serve/public.py`): per client IP token buckets — identify 3/s burst +
+60/min, price 6 burst + 30/min, `/ref` 80 burst + 10/s, page/assets 60 + 5/s, model files 8/h,
+vendored ORT 40/h; 429 + `Retry-After`. The IP is `CF-Connecting-IP` only when the request came
+from Caddy (`POKESCANNER_TRUSTED_PROXIES`, default 10.0.0.1) **and** Caddy's last
+`X-Forwarded-For` hop is a Cloudflare range; otherwise that last hop. IPs exist only in the
+in-memory limiter. Concurrency: 2 anonymous identifies in the service, others wait ≤ 2 s,
+then 503 `Retry-After: 2`; the recogniser lock is a `PriorityLock` (owner frames first). A wrong
+bearer is a 401, never "anonymous". `CDN-Cache-Control: no-store` on `/identify`, `/price`,
+`/health`, `/public/*` (Cloudflare shows `cf-cache-status: DYNAMIC`).
+
+Stats (aggregate only, in memory, reset on restart):
+`curl -s http://10.0.1.40:8000/public/stats -H "Authorization: Bearer $TOKEN"` → requests,
+states per mode (server/device), rejections (`rate:<kind>`, `busy`, `size`), latency p50/p90.
+
+**Revert (one command, Proxmox host):**
+```
+bash /srv/repos/pokescan-wt-public/scripts/public_demo/public_demo_off.sh
+# (same file in any pokescan checkout of `live`: scripts/public_demo/public_demo_off.sh)
+```
+It turns forward-auth back on for `/live*` (`opnsense_forwardauth.py on`, timestamped
+`config.xml` backup + both configctl commands), sets `publicUntil = ""` in denils, commits,
+pushes, `update-pokescanner`, restarts the unit and prints `/health.public` + the `/live`
+status (expect 302). Caddy only: `ssh root@10.0.0.1 /usr/local/bin/python3
+/root/pokescan_forwardauth.py on|off|status`. Extending the demo = new `publicUntil` +
+`update-pokescanner` + `systemctl restart pokescanner`.
+
+Verified 2026-09-29 via https://scan.nilss.dev without cookie/token: `/live` 200 (demo tag),
+versioned `live.js`/`demo.js` 200, `/identify?debug=1` 200 with `trace_id: null` and no new
+trace dir, `/price` 200 (`DYNAMIC`), manifest 200; `/collection/{status,login,add}` 302 →
+auth.nilss.dev, `POST /collection/add` 302; `/trace`, `/bundle`, `/public/stats` 401; outpost
+ping 204; 7 parallel identifies → 4× 429; the same burst via Caddy on the LAN path was
+not limited (per-client keys work); owner bearer via the public host 200, wrong bearer 401.
+Unit tests: `tests/test_serve_public.py` (expiry with a past timestamp, debug ignored, limits,
+gate 503, priority lock, client-IP trust), `tests/live/demo.test.mjs`.
 
 ## Caching
 

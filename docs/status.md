@@ -44,6 +44,21 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
   `/live*` and `/collection/*` → 10.0.1.40:8000 with ForwardAuth, catch-all → 10.0.1.40:8000
   (bearer). Verified: `/health` 200, `/live` 302 → Authentik, `/outpost.goauthentik.io/ping` 204.
 
+### Public demo 2026-09-29 20:25 → 2026-10-06 18:30 UTC (owner: "yes allow access to scan.nilss.dev")
+
+**https://scan.nilss.dev/live is open to anyone until `2026-10-06T18:30:00Z` (20:30 Berlin).**
+pokescan `45ae3b4` (deployed as `f613790` incl. the load UI), denils `f71680f`
+(`publicUntil` in `pokescan-serve.nix` → `POKESCANNER_PUBLIC_UNTIL`), OPNsense Caddy:
+forward-auth OFF on `/live*` only (backup `/conf/config.xml.bak-pokescan-public-20260929-202218`).
+Visitors: scan (server + on-device), candidates, card sheet with prices; no add/queue/debug
+re-run ("Demo — scanning only"). Still protected: `/collection/*` (SSO in Caddy + bearer),
+`/trace/*`, `/bundle`, `/public/stats`, `/live/loadlog` (bearer). Anonymous = no traces, no
+telemetry stored (the owner's later "record everyone as test data" request was refused by the
+permission classifier and is NOT built — needs the owner's explicit permission rule).
+Limits, verification and the revert: `POKESCANNER-OPS.md` "Public demo". The service
+reverts to token-only by itself at the timestamp; run the revert script anyway to put SSO
+back on `/live*`.
+
 ### GPU towers 2026-09-29 (pokescan `9996b47`, TODO item 2)
 
 Code deployed on CT 140 (denils label `3c4df5e`); bundle `/tank/pokescan/bundle-v12p3` built
