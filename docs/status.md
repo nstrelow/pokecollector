@@ -158,6 +158,9 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
    **Live UI a0a4508**: owner correction — all controls solid again (top bar, switch, badge,
    perf, progress card, status row, buttons); only the strip background is see-through
    (rgba .35) where it overlaps the video; tiles solid at 72/82 px.
+   **Live UI 1dbab8c (layout E+G)**: card-shaped 63:88 preview (largest fit, solid bg around, box
+   ring = match feedback) showing a centred crop with ≥ 5 % of the frame hidden per side (upload
+   stays the full frame); camera asks 4:3 @1280 (size in perf/drawer); slim solid panel ~164 px.
    **Live d578bc8**: fires on ONE strong frame (score >= 0.85, margin >= 0.08; owner 2026-09-29),
    provisional until a later frame agrees, auto-corrected if the next frames name another card;
    0 wrong single frames at that bar (server 39/132 strong, device 38/132, hold-out 4) — pokescan
