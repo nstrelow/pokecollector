@@ -208,3 +208,41 @@ memory 3072 unchanged; deployed with `update-pokescanner` + restart, tofu state 
   the lock (ORT sessions can run concurrently at the cost of splitting the threads).
 - Not verified on a real phone. Deploy note: `/health.commit` comes from `commit =` in
   `pokescan-serve.nix` (bumped to 948cfda), not from the git checkout.
+
+### Lane 2 (2026-09-29) — int8 tower on the server: **nothing passes, nothing deployed**
+
+pokescan branch `int8-serve` @ 16a4984 (pushed, not merged), `scripts/export_int8_static.py`,
+`data/exp/results/int8_static.json` + `gate_cascade_int8_<cand>.json`, PLAN-A-LOG "Server int8 tower
+(latency lane 2)". ORT 1.22 CPU EP, 6 threads, `nice 10`, host load 8-9 during the latency run.
+Calibration: 530 planes from 250 real wild photos (cardphotos corpus) through the bundle's S1 + rectify,
+bit-exact to `ClipRetriever._prep`; fidelity: 200 planes from 110 other wild photos; neither overlaps
+the gate. Latency: gate's first 20 frames, the real 2-rotation batch, all towers interleaved, 5 rounds.
+Gate: full `gate_cascade.py` with a new experiment-only `--clip-tower` flag; fp32 re-run as reference
+(top-1 99.24 %, ambiguous 9.85 %, wrong-confident 0 — identical to the shipped v12 gate).
+
+| cand | what | cos p50 / p1 | tower p50 / p90 ms | speedup | identify p50 ms | gate top-1 (Δpp) | ambig % | wrong-conf | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| fp32 | shipped | 1 / 1 | 278 / 327 | 1.00 | 586 | 99.24 | 9.85 | 0 | reference |
+| C | fp32 saved ORT_ENABLE_ALL + sequential + spinning | 1.0 / 1.0 | 286 / 369 | 0.97 | 553 | 99.24 (0.00) | 9.85 | 0 | **FAIL** (no speedup; < 10 % so not shipped either) |
+| B | MatMulNBits 8-bit, block 128, accuracy_level 4 | 0.9993 / 0.9986 | 207 / 318 | 1.34 | 529 | 98.48 (-0.76) | 10.61 | 0 | **FAIL** (speed + top-1) |
+| A MinMax | static QDQ per-channel, MatMul+Gemm | 0.578 / 0.360 | 134 / 190 | 2.08 | 416 | 16.67 (-82.6) | 100 | 0 | **FAIL** |
+| A Percentile | same, 99.999 pct | 0.737 / 0.542 | 137 / 192 | 2.03 | 448 | 53.03 (-46.2) | 93.2 | 0 | **FAIL** |
+| A_minmax_nob6 | attn act-matmuls + block-6 MLP c_proj kept fp32 | 0.969 / 0.947 | 136 / 205 | 2.04 | 446 | 96.97 (-2.27) | 12.12 | 0 | **FAIL** |
+| A_sq50_nob6 | + SmoothQuant α 0.5 | 0.973 / 0.951 | 133 / 197 | 2.09 | 427 | 97.73 (-1.51) | 10.61 | **1** | **FAIL** |
+| A_sq50_core | + out_proj and final proj fp32 | 0.976 / 0.957 | 153 / 223 | 1.82 | 464 | 96.97 (-2.27) | 12.88 | 0 | **FAIL** |
+| A_sq50_nofc2 | SmoothQuant, all MLP c_proj fp32 | 0.985 / 0.972 | 179 / 240 | 1.55 | 481 | 97.73 (-1.51) | 11.36 | 0 | **FAIL** |
+| A_pct_nofc2 | Percentile, all MLP c_proj fp32 | 0.985 / 0.971 | 182 / 235 | 1.53 | 503 | 98.48 (-0.76) | 11.36 | 0 | **FAIL** (closest: 1 frame) |
+
+Why: plain static int8 is destroyed by a single tensor — block 6's MLP down-projection input (one
+massive-activation channel) alone takes cosine 0.98 -> 0.58. With it in fp32, every remaining group still
+costs a little (per-tensor uint8 activations; MLAS has no per-channel activation path) and it sums to
+~0.97-0.985 cosine, which moves 6-11 of the 132 gate frames. The gate is far stricter than cosine: even
+B's 0.9993 flips the known 5.9e-5 near-tie frame (`item6`) and demotes one IDENTIFIED to AMBIGUOUS.
+Fully static int8 would be ~2.1x on the tower (identify ~586 -> ~420 ms); what quality needs in fp32
+brings it down to 1.5x. C proves ORT already applies all graph optimisations and spinning by default.
+
+**Recommendation:** do not ship an int8 tower and do not change the ORT session; there is no
+`bundle-v12-int8`, nothing was deployed. Latency comes from lane 1 + lane 3. The one untested path that
+could rescue A_pct_nofc2 (1.53x, one frame short) is re-embedding the 60k gallery through the int8 tower
+so query and gallery share the quantisation error (invariant 4) — ~1-2 h CPU plus a new table/bundle and a
+re-gate; only worth doing if lane 1 + 3 leave the target unmet.
