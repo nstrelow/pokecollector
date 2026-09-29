@@ -58,12 +58,21 @@ Pending: switch CT 140 to `/tank/pokescan/bundle-v12p3` (main session):
 `pct set 140 -mp0 /tank/pokescan/bundle-v12p3,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140`.
 Until then the manifest has `towers: {wasm}` only and behaviour is unchanged.
 
-### 3. Move rectify + CLIP prep onto the GPU
+### 3. ~~Move rectify + CLIP prep onto the GPU~~ — done 2026-09-29 (pokescan abc5c90)
 
-JS on the CPU today: quad fit, perspective warp, resize/normalise (headless on the loaded
-host: localize post-processing ~330 ms, rectify ~140 ms, prep ~170 ms). Either WebGPU
-compute shaders, or fold resize + normalise into the ONNX graph so the tower takes the
-plane directly.
+`p2/gpuprep.js`: two WebGPU compute passes on ORT's own device (the float32 `warpPlane`
+formula; rot90 + INTER_AREA with geometry.js' own taps + CLIP normalise); the tower reads the
+input as a GPU buffer (`ort.Tensor.fromGpuBuffer`), the plane is read back only for the crop.
+On whenever the tower runs on WebGPU; JS stays the fallback (Wasm tower, create failure, any
+GPU error -> off for the session). No new model files, no bundle change.
+Parity (headless Chromium, SwiftShader WebGPU): plane **bit-exact** on a synthetic frame
+(rotations 0-3) and 4 real testset-v2 photos at 1280 px, CLIP input max |diff| <= 4.8e-7,
+fp32 tower cosine (JS input vs GPU buffer) **1.0000000** -> same vectors, same print_id.
+Time there (SwiftShader emulates the GPU on the CPU): JS warp+prep 225-343 ms vs GPU ~33 ms
++ 5-7 ms readback. Expected on the owner's phone: ~200-250 ms off the 969 ms frame; the perf
+line now reads `warp gpu` (the GPU time is inside `clip`), the drawer `prep gpu` and a
+`readback` stage. Still on the CPU: the U-Net's letterbox/TTA/sigmoid + quad fit (`loc`) and
+the crop encode.
 
 ### 4. Overlap frames
 
