@@ -1,6 +1,6 @@
 # pokescanner — status
 
-Read this first. Plan: `docs/POKESCANNER-PLAN.md`. Ops/runbook: `docs/POKESCANNER-OPS.md`. Workflow: `docs/agent-workflow.md`.
+Read this first. Plan: `docs/POKESCANNER-PLAN.md`. Ops/runbook: `docs/POKESCANNER-OPS.md`. Latency plan: `docs/POKESCANNER-LATENCY.md`. Workflow: `docs/agent-workflow.md`.
 
 ## State on 2026-09-29 ~01:00 (end of the overnight run)
 
@@ -129,8 +129,10 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
    page; note fps, misfires, wrong cards, UX papercuts here. This decides everything below.
 3. Trusted-proxy auth (removes the token box) — owner approval needed.
 4. ~~Trace retention~~ done 09-29 (90 d / 10 GB). Still open: a Gatus/Beszel disk alert for CT 140.
-5. Latency: re-measure on a quiet host; if still > 1 s, try `POKESCANNER_THREADS=8` on a 8-vCPU
-   CT, or the int8 tower on the server too (same export as P2).
+5. **Latency (in progress 2026-09-29, 3 lanes)** — plan in `docs/POKESCANNER-LATENCY.md`:
+   lane 1 more cores/threads (+ P-core pin test), lane 2 calibrated static-int8 tower behind the
+   accuracy gate, lane 3 early-fire consensus + client frame gate + pipelining. Baseline 953 ms
+   server (765 ms retrieve), target ≤ 400 ms server / ≤ 1.5 s per card.
 6. Merge pokescan `live` into `plan-a` (pure addition + torch-free refactor) so the next gallery
    build ships with the service; then bundle v13.
 7. P2 (on-device int8 CLIP, hybrid retrieval): plan §7. Start with the int8 export + gate
