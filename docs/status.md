@@ -158,6 +158,10 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
    **Live UI a0a4508**: owner correction — all controls solid again (top bar, switch, badge,
    perf, progress card, status row, buttons); only the strip background is see-through
    (rgba .35) where it overlaps the video; tiles solid at 72/82 px.
+   **Live d578bc8**: fires on ONE strong frame (score >= 0.85, margin >= 0.08; owner 2026-09-29),
+   provisional until a later frame agrees, auto-corrected if the next frames name another card;
+   0 wrong single frames at that bar (server 39/132 strong, device 38/132, hold-out 4) — pokescan
+   PLAN-A-LOG "single-frame fire". Firefox Android: CPU only, hint says Chrome is faster.
    **Phone test**: open scan.nilss.dev/live, tap *On-device* on the viewfinder switch,
    confirm the download, watch the progress card (~115 MB incl. the 26 MB wasm, once; cached
    after), the GPU/CPU tag on the switch and `dev N ms` in the perf line. Expect
