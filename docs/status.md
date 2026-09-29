@@ -49,10 +49,12 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
 1. ~~Embedded outpost host~~ done 09-29 09:40: `authentik_host` + `authentik_host_browser` =
    `https://auth.nilss.dev` (owner-approved), server restarted; `/live` now redirects to
    `https://auth.nilss.dev/application/o/authorize/…`.
-2. Live-page adds: `POKESCANNER_COLLECTION_URL=http://10.0.1.10:8000`,
-   `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (a pokecollector user; the service re-logs in
-   on 401) and `POKESCANNER_COLLECTION_UI_URL=https://poke.nilss.dev/scans` in the agenix
-   env secret + `pokescan-serve.nix`, then `update-pokescanner`.
+2. ~~Live-page adds~~ done 09-29 09:55: pokecollector user `pokescanner` (id 3, role trainer,
+   test account so the owner's collection stays clean), creds in the agenix env secret,
+   `POKESCANNER_COLLECTION_URL/UI_URL` in the unit; `/collection/status` configured=true; a
+   real `POST /collection/add` created item 505 (`hgss4-6_en`). Note: a switch that changes
+   both the secret and the unit can restart the service on the OLD unit file — `systemctl
+   restart pokescanner` afterwards.
 3. Komodo: don't redeploy/pull the `pokecollector` stack from Komodo — its `file_paths`
    lack `docker-compose.build.yml` (fix in Mongo per `host.md`, or leave it and deploy by hand).
 4. Try `/live` on a real phone, then scan ~20 PRE/full-art cards and note results here.
