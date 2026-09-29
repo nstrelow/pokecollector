@@ -134,7 +134,56 @@ the nix file, update PLAN-A-LOG.
 
 ## Results
 
-(lanes append here)
+### Lane 1 (2026-09-29) — CPU for CT 140
+
+Method: real service on CT 140, `/identify?debug=1`, 4 photos (CLC-004 = POSSIBLY_UNSUPPORTED_SET en:swsh10-021;
+three real phone frames: `..230416843` = ja:M1S-033, `..113758013` = en:me05-048, `..114712589` = ja:M1S-001),
+10 calls each after 1 warm-up, median of `timings_ms.retrieve` / `total`. **The host was heavily loaded the
+whole time (load avg 10 -> 48; the niced cardphotos re-scan workers + the int8 lane's build saturate the
+20 threads), so absolute numbers are 1.5-2x worse than the idle baseline and noisy (+/-20 %);
+only the ordering is meaningful.** Decisions come from A/B alternation, not single runs.
+
+Retrieve / total ms per photo, CLC-004 | M1S-033 | me05-048 | M1S-001 (cores/threads, host load1 at start):
+
+| config | retrieve | total | load |
+|---|---|---|---|
+| 4/4 (baseline, 1st) | 775 / 942 / 747 / 756 | 981 / 1304 / 897 / 887 | 12 |
+| 4/4 (2nd) | 1005 / 1116 / 1085 / 982 | 1185 / 1811 / 1365 / 1353 | 43 |
+| 4/4 (3rd) | 920 / 1074 / 1002 / - | 1087 / 1599 / 1277 / - | 26 |
+| 8/8 | 793 / 984 / 816 / 789 | 960 / 1421 / 981 / 938 | 18 |
+| 8/6 (run 1) | 556 / 784 / 622 / 598 | 677 / 1187 / 811 / 744 | 22 |
+| 8/6 (run 2) | 873 / 778 / 751 / 726 | 1138 / 1416 / 968 / 963 | 41 |
+| 8/6 (run 3) | 683 / 781 / 593 / 594 | 840 / 1295 / 754 / 721 | 30 |
+| 8/6 (A/B) | 973 / 890 / 981 / 814 | 1243 / 1366 / 1318 / 1068 | 36 |
+| 8/6 (A/B) | 793 / 891 / 866 / 678 | 919 / 1447 / 1211 / 951 | 30 |
+| 6/6 | 938 / 1142 / 1010 / 1044 | 1127 / 1885 / 1315 / 1296 | 38 |
+| 12/12 | 776 / 1029 / 954 / 913 | 943 / 1765 / 1234 / 1219 | 27 |
+| 12/8 | 887 / 918 / 866 / 948 | 1038 / 1858 / 1177 / 1227 | 35 |
+| 8/4 (run 1) | 639 / 627 / 467 / 480 | 753 / 968 / 631 / 653 | 43 |
+| 8/4 (A/B) | 764 / 621 / 650 / 816 | 937 / 978 / 923 / 1064 | 33 |
+| 8/4 (A/B) | 823 / 662 / 554 / 656 | 1028 / 994 / 728 / 917 | 35 |
+| 8/5 | 729 / 731 / 662 / 621 | 993 / 1335 / 855 / 821 | 29 |
+| 8 (cpuset 0-11) /6 | 886 / 1156 / 1005 / 1373 | 1146 / 1963 / 1380 / 1760 | 34 |
+| 8 (cpuset 0,2,..,10 = 1 thread per P-core) /6 | 1282 / 1479 / 1107 / 1384 | 1725 / 2401 / 1493 / 1845 | 42 |
+| **8/4 deployed (after switch)** | 385 / 566 / 761 / 729 | 467 / 805 / 1028 / 908 | 17 |
+
+Findings:
+- Under equal load, cores 4 -> 8 with threads=4 is ~25-35 % faster on retrieve (about 1000 -> 650-750 ms).
+  More threads do not help and often hurt (ORT sync stalls when the host is oversubscribed): 8/8, 12/12 and 12/8
+  are no better than 4/4; 8/6 is between. threads=4 stays; the extra cores just give the 4 threads and the
+  HTTP/localize work room to run on free cpus.
+- PVE applies `cores` as a cpuset (`cpuset.cpus.effective` was `0-3` at cores=4, `0-7` at cores=8). cpus 0-3
+  are only two physical P-cores (HT siblings), which is why the baseline is so starved.
+- Pinning (P-cores 0-11, or one HT sibling per P-core) was not better (worse, in fact, under this load);
+  no cpuset override is kept.
+- RSS ~1.0 GB (peak 1.1 GB) at threads=4, so memory stays 3072.
+- The accept criterion (retrieve median < 500 ms) is NOT reached under load; the only sub-500 readings were
+  at the lowest load (385 ms on CLC-004, 467 ms on me05-048 in one run). Re-measure on an idle host. The
+  remaining lever is the tower itself (lane 2).
+
+Permanent config: denils `hosts/pokescanner.nix` `proxmox.cores = 8` (commit 8dac08f), `threads = 4` and
+memory 3072 unchanged; deployed with `update-pokescanner` + restart, tofu state reconciled via
+`apply -refresh-only`, `check-drift` reports no drift. `/identify` decisions identical across configs.
 
 ### Lane 3 (page round trips), 2026-09-29, pokescan `live` @ 948cfda, deployed
 
