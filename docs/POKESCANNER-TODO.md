@@ -173,3 +173,10 @@ Left:
   "Default for English/German look-alikes", follows the last added Latin-script print.
 - ~~Disk alert for CT 140 traces~~ — DONE 2026-09-29 (pokescan `fdfa89d`, denils `34b3150`):
   `/health` reports `disk.free_pct`; Gatus "Pokescanner disk" alerts via ntfy below 15 %.
+- ~~Server-mode upload cost~~ — DONE 2026-09-29 (pokescan `9a00c3b`, denils `243ff1c`): live
+  frames go up at 1280 px (was 1920), JPEG q0.8 encoded in a worker (OffscreenCanvas,
+  toBlob fallback); photo uploads untouched. Gate (132 rows, multipart live1): top-1 75.00 ->
+  76.52, auto 63.64 -> 64.39, silent wrong 0, FA 0; ~-49 % bytes. Check the drawer's `enc ms`
+  on the phone (expect ~45-120 ms, ~70-100 KB, "worker"). Proposed, not done: ORT
+  `allow_spinning=0` on the server sessions (replica retrieve 336 -> 214 ms), CT 140 +1 GB RAM
+  (it swapped 429 MB); keep 4 threads (6/8 are slower on its P/E-core mix).
