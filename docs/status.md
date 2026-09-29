@@ -197,3 +197,4 @@ Code deployed on CT 140 (denils label `3c4df5e`); bundle `/tank/pokescan/bundle-
 P2: see item 7 above. P3: not started (plan §7).
 
 - 2026-09-29 (pokescan 6cb28c1): live page gets a focus-aware target guide (corner ticks sized for 1.25 × the camera's closest focus on Chrome Android, else 65 % / iPhone 50 % of the box), "Move back a little — too close to focus" / "Move closer" hints, 1920 px camera frames (upload cap 1280 -> 1920), an 8 px gap under the preview ring, and per-stage device timings + EPs + shader-f16 in the drawer.
+- 2026-09-29 (pokescan 25bf58c, f3d480f): guide 72 % of the box (iPhone 65 %, clamp 60–85 %, card sized for 1.0 × closest focus); device speed — JPEG crop, faster localize JS, 2 frames in flight on WebGPU, page-stage timings in the drawer; the outline tracks the scene between results (the device-mode offset was latency).
