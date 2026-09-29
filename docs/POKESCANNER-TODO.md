@@ -16,35 +16,27 @@ The worker already times `decode · localize · rectify · tower · encode` (`p2
 Owner: open the drawer during a scan and screenshot the "device timings" row and the
 `shader-f16` flag. Pick the order of items 1–5 from that.
 
-### 1. One rotation per live frame instead of two (likely the biggest win)
+### 1. ~~One rotation per live frame instead of two~~ — DONE 2026-09-29 (pokescan `1ac08da`)
 
-**Why.** Every frame embeds the rectified card twice: the pair along the card's long axis
-(upright and 180°) from `selectRotations` (`geo2_axis`, `p2/geometry.js:132`, Python
-`rotation.select_rotations`). When the axis is unsure (squarish quad) it embeds **all
-four**. The tower is a batch of R images, so time is ~linear in R. In a live camera view the
-card is almost always upright relative to the phone, so the 180° pass is wasted work.
+Live camera frames (device and server mode; Snap reuses them) embed exactly ONE view,
+`rotation_mode=live1`: the rotation whose plane top edge is highest in the camera image.
+Owner: "never do flips in live feed, not needed, people should hold their phone upright" —
+no upside-down fallback, no state machine. Photo uploads (📷) keep `geo2_axis` (both views
+along the long axis) because EXIF orientation is unreliable with the phone lying flat.
+Server: `/identify?rotation_mode=live1` (multipart); device: `dev.process(bmp, {rotationMode})`.
 
-**Cost / difficulty: small.** It is not a model change: rotations are just images in the
-batch, and the API already takes any subset. `CardRecognizer.identify_from_embedding`
-accepts `vectors` with 1–4 rows plus a matching `rotations` list (validated at
-`recognizer.py:1084`). What changes is the client and a policy knob:
-
-- `selectRotations(quad, "live1")`: one rotation, the one of the long-axis pair whose card
-  top faces the top of the camera image (pure function + tests, mirrored in Python
-  `rotation.py` so server mode can use it too).
-- Fallback, so an upside-down card still works: if the result is weak (not strong by the
-  consensus bar, or `NO_MATCH`/`AMBIGUOUS`) for 2 frames in a row, the next frame embeds the
-  pair again (or only the 180° one). Unsure axis stays on all four.
-- Server mode: `/identify?rotations=live1` (or a `rotation_mode` query) so the server path
-  also halves its retrieve stage (765 ms of the ~950 ms today were the batched tower).
-- S7's upright roll (reads the card number from the bottom corners of the upright plane)
-  uses the max over embedded rotations. With one row it just takes that row; check that
-  OCR/fuse still get the right corners.
-
-**Measure first.** Gate run on testset-v2 with `rotation_mode=live1` vs `geo2_axis`: top-1,
-wrong-confident, and how many frames are upside down in the set (those should recover via
-the fallback on the next frame, which a single-frame gate can't show, so also count them).
-**Done when** device tower time halves on the phone and the gate shows no new wrong-confident.
+Results (testset-v2 gate, 132 photos; details in pokescan PLAN-A-LOG "one rotation per live
+frame"):
+- Card upright/upside down in the image (64 photos, the live-feed case): top-1 63 → 63,
+  auto-correct 55 → 55 — identical to the pair at half the tower work.
+- Card lying sideways in the image (64 landscape photos): 64 → 36; one view is a coin flip
+  between 90° and 270°. Squarish quads (4): 4 → 2. **0 silent wrong, 0 false accepts** in
+  every group; misses become AMBIGUOUS/picker. A sideways card in a portrait live feed means
+  the card is held across the phone. If that matters in practice: embed the pair only for
+  sideways cards (not a flip — no "up" exists there). Owner call, not done.
+- Cost: server S1–S3 p50 2587 → 1478 ms on the loaded box; a real frame retrieve 518 → 276 ms
+  (total 617 → 411 ms); tower alone (int8wo, Wasm, 1 thread) 1 row 2550 ms vs 2 rows 5045 ms.
+  On the phone the tower stage should roughly halve — confirm with the drawer's device timings.
 
 ### 2. GPU-friendly tower file
 
