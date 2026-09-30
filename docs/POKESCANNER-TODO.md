@@ -3,6 +3,33 @@
 Open work on the scanner, newest first. State lives in `docs/status.md`; this file is the
 backlog. Each item says why, what to measure first, and when it is done.
 
+## Open tasks checklist (2026-09-30)
+
+State: pokescan `live` = ddb93b8 (bundle v14, speed-ups e03d629, owner-only lockdown), denils e8ca056.
+
+### Owner
+- [ ] Open `/live` on the phone after the Authentik login: confirm page, card thumbnails (/ref) and prices load under SSO.
+- [ ] Phone retest of the speed-ups; screenshot the drawer. Expect: `localiser webgpu (TTA 4)`, `frame→GPU texture`,
+      `decode` ~0, separate `readback`, new `steps:` line (localize prep/wait/run/post, tower wait/run), real KB on the crop row.
+      Phone re-downloads the tower once (cache key `pokescan-models-v14`).
+- [ ] Decide GitHub: (a) make `live` the default branch of nstrelow/pokescan, (b) separate clean scanner-app repo, (c) make public after review.
+- [ ] OK for ORT `allow_spinning=0` in the server sessions (clip.py, maskfit.py, numbers/reader.py, verify.py): ~-100 ms in Server mode.
+- [ ] OK for CT 140 RAM 3 -> 4 GB (main session runs `pct set`, ~30 s downtime; service had 429 MB in swap).
+- [ ] Test Firefox CPU mode (`wasm x4` or thread retry) and the "sign in" -> add-to-collection round trip.
+- [ ] Rotate the pokecollector API token (was pasted in chat once); then update the agenix secret.
+- [ ] Anonymous test-data collection from visitors was denied as PII; only revisit if the owner adds a permission rule / re-authorises explicitly.
+
+### Claude
+- [ ] Read the phone's `steps:` line; decide next speed step (lock waits vs tower vs net). Ideas: ORT WebGPU graph capture + gpu-buffer outputs for the tower, cheaper `grab` (39-71 ms, two willReadFrequently canvases), batch-1 tower warm-up (needs fallback-test rework).
+- [ ] Cloudflare edge layer (deferred; see the section at the bottom): Access with Authentik as IdP, EU/EEA+UK+CH geo filter, bot filter. Needs a scoped token in /root/.config/cloudflare/token or owner clicks.
+- [ ] `/docs` and `/openapi.json` still open to LAN callers; lock or disable if wanted.
+- [ ] Price backlog: variant-aware headline, ja->en fallback, history.
+- [ ] Sideways two-view decision (TTA 4 loses 4 sideways auto-corrects; upright rows gain +1).
+- [ ] SSO instead of the browser bearer token in the page, then rotate the token.
+- [ ] Server RANSAC least-squares refinement.
+- [ ] v15 (+ Japanese part 2) deploy is owned by the `pokescanner` session; it pulls `live` first.
+- [ ] Public demo code is inert (publicUntil empty); delete it or keep for a future hardened demo.
+
 ## On-device speed (P2 live mode)
 
 Measured 2026-09-29 on the owner's Android phone, Chrome, WebGPU: **~1.1 s per device frame
