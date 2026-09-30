@@ -100,7 +100,7 @@ design in `docs/POKESCANNER-PLAN.md`.
 
 **Re-enable sharing:**
 - *Another signed-in person:* add a user or group binding on `pokescan-live`, and extend the
-  guard's expression if their denials shouldn't alert. Also add the username to `ssoUsers`
+  guard's expression if their denials shouldn't alert. Also add the username to
   (`POKESCANNER_SSO_USERS` in `pokescan-serve.nix`) or clear it. Without that their `/ref`
   thumbnails return 401. They also need the bearer in their browser.
 - *Anonymous public demo:*
