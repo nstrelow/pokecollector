@@ -71,6 +71,30 @@ Deployed on CT 140: live TTA 4, GPU input path, cheaper crop encode, anonymous p
 (`POKESCANNER-TODO.md` item 7; pokescan `docs/PLAN-A-LOG.md` "on-device speed-ups").
 Phone retest pending.
 
+### Gallery v13 + v14 live 2026-09-30 ~03:45 Berlin (owner: "Bring v13 + v14 into the live app tonight? → Yes")
+
+pokescan `live` 15d4869 = merge of plan-a 3ccc805 (v13 English Pokémon TCG Classic + guard; v14
+fr/it/pt/es TCG Live refs for SV/ME as a language *veto*, twin split by identity, hold-out mask
+by identity) + test/doc commits; denils 6ad3ab7; CT 140 mp0 → `/tank/pokescan/bundle-v14`
+(bundle sha b7b8e8532325, 2.33 GB, `client/` towers unchanged). `bundle-v12p3` untouched =
+rollback (`POKESCANNER-OPS.md` "Roll back the v14 deploy").
+* Gate on the merged code: server path PASS, 132/132 frames identical to v12 and v14
+  references; device path (int8wo, live1, TTA 4) 0/132 frames changed vs the accepted
+  `gate_cascade_p2_live1_tta4.json`, hold-out + out-of-domain identical. 0 new silent wrong,
+  0 new false accepts. Tests: all pokescan files green, serve 44 + live 72 on the real v14
+  bundle, node 130/130.
+* Verified on CT 140: `/health` commit 15d4869 / v14, `/live` 200, manifest 200, all four
+  model files 206 (same names as v12p3 → Cloudflare copies stay valid; the device cache key
+  moves to `pokescan-models-v14`, so on-device users download the tower once more), `/ref`
+  200; identify: wild phone photo → IDENTIFIED `en:me05-017`; French eBay photo →
+  CONFIRM_LANGUAGE with `fr:sv06-053` pre-selected; RSS ~1.1 GB of 3 GB.
+* **"en:swsh10-021 POSSIBLY_UNSUPPORTED_SET" (225 load-test traces 09-29 08–09 UTC) was not a
+  bug:** the photo is the English Classic **CLC 004/034** Ponyta (same art as Astral Radiance
+  021/189); v12 had no /34 print, so S7's correct reading flagged the top-1. On v14 it is
+  AMBIGUOUS with `en:clc-004` pre-selected.
+* Public demo: already ended 2026-09-29 23:29 (denils 195ef60, `publicUntil = ""`); `/live`
+  on scan.nilss.dev is behind SSO again (302). Not re-enabled.
+
 ### Owner TODOs
 
 1. ~~Embedded outpost host~~ done 09-29 09:40: `authentik_host` + `authentik_host_browser` =
