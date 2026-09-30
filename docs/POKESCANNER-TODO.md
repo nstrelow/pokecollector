@@ -199,3 +199,13 @@ Left:
   loads from `/live/p2/ort/<file>?coi=1` (no 308), asset version carries `-coi`, and a 10 s
   watchdog restarts a stuck threaded start with 1 thread (remembered per UA). Drawer shows
   `wasm ×4` / `wasm ×1 (threads hung, retried)`. Phone check: expect ready with `wasm ×N`.
+
+## Cloudflare edge layer for scan.nilss.dev (owner decided 2026-09-30, deferred)
+Owner-only lockdown via Authentik + Caddy is live (see OPS "Owner-only lockdown"). Cloudflare part was
+skipped for now; when picked up, the owner's choices are:
+- Cloudflare Access app on scan.nilss.dev with **Authentik as OIDC IdP**, allow only djnilse@gmail.com,
+  long session (~30 d) so the phone rarely re-logs in.
+- Geo filter: allow **EU/EEA + UK + CH** only.
+- Bot filter (Bot Fight Mode / managed challenge for non-authenticated traffic).
+- Needs a scoped API token in /root/.config/cloudflare/token (chmod 600) or owner clicks in the dashboard.
+  Tunnel = cloudflared on vigil CT 132 (dashboard-managed ingress).
