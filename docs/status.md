@@ -95,6 +95,23 @@ rollback (`POKESCANNER-OPS.md` "Roll back the v14 deploy").
 * Public demo: already ended 2026-09-29 23:29 (denils 195ef60, `publicUntil = ""`); `/live`
   on scan.nilss.dev is behind SSO again (302). Not re-enabled.
 
+### Owner-only lockdown 2026-09-30 (owner's decision)
+
+scan.nilss.dev is now for the owner only:
+- **Caddy:** every path has forward-auth (the catch-all handle `a8c1116b…` was the last open
+  one). Backup: `/conf/config.xml.bak-pokescan-lockdown-20260930`.
+- **Authentik:** app `pokescan-live` is bound to user `nils` only, plus a logged guard
+  expression policy.
+- **Alerts:** ntfy gets logins, access denials and failed logins for the app.
+- **Service:** pokescan `live` ddb93b8, deployed with denils e8ca056
+  (`POKESCANNER_SSO_USERS=nils`). `/health` shows full detail only to LAN, bearer or SSO
+  callers, everyone else gets `{"ok":true}`. `/ref` needs the same trusted caller. No
+  response is cached at the Cloudflare edge.
+
+Gatus and pokecollector use 10.0.1.40:8000 directly and are unaffected. Details and how to
+re-enable sharing: `POKESCANNER-OPS.md` "Owner-only lockdown". The Cloudflare-side hardening
+is handled separately.
+
 ### Owner TODOs
 
 1. ~~Embedded outpost host~~ done 09-29 09:40: `authentik_host` + `authentik_host_browser` =

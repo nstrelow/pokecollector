@@ -16,8 +16,8 @@ design in `docs/POKESCANNER-PLAN.md`.
 | traces | CT 140 `/var/lib/pokescanner/traces/` (local disk, NOT backed up); one dir per `debug=1` identify: `trace.json` (full top-k, geometry), `source.jpg`, `plane.webp`, `overlay.webp` (~120–760 KB); no-card states keep only json + small overlay | swept by the service at startup + hourly: `POKESCANNER_TRACE_KEEP_DAYS` (90) then `POKESCANNER_TRACE_MAX_GB` (10), oldest first — knobs in `pokescan-serve.nix` (`traceKeepDays`, `traceMaxGb`) | pokescan `serve/app.py` `sweep_traces` |
 | CT 140 rootfs | `pool/subvol-140-disk-0`, **20 GB** since 2026-09-29 (was 8) | grow with `pct resize 140 rootfs <N>G` (online), then set `proxmox.disk` in `hosts/pokescanner.nix` and run a tofu `apply -refresh-only` in `~/.local/share/den-lxc/pokescanner` so `check-drift` is clean (never `provision-*`) | denils |
 | pokecollector (fork branch `pokescanner`) | CT 100 `alpine-komodo`, docker stack `/etc/komodo/stacks/pokecollector`, https://poke.nilss.dev | by hand (see below) — NOT via Komodo | `nstrelow/pokecollector` |
-| public entry | OPNsense Caddy: `scan.nilss.dev` → 10.0.1.40:8000; `poke.nilss.dev` → 10.0.1.10:3000 | `/conf/config.xml` `<reverseproxy>` (subdomain `158ae50d…` + 4 handles), `configctl template reload OPNsense/Caddy && configctl caddy reload` | — |
-| SSO | Authentik on CT 100: ProxyProvider "pokescan live" (forward-auth single app), app `pokescan-live`, embedded outpost (`authentik_host` = https://auth.nilss.dev) | UI, or `docker exec authentik-server-1 ak shell -c '…'` | — |
+| public entry | OPNsense Caddy: `scan.nilss.dev` → 10.0.1.40:8000; `poke.nilss.dev` → 10.0.1.10:3000 | `/conf/config.xml` `<reverseproxy>` (subdomain `158ae50d…` + 4 handles, **all three scanner handles with ForwardAuth since 2026-09-30**), `configctl template reload OPNsense/Caddy && configctl caddy reload` | — |
+| SSO | Authentik on CT 100: ProxyProvider "pokescan live" (forward-auth single app), app `pokescan-live`, embedded outpost (`authentik_host` = https://auth.nilss.dev); **owner-only** (see "Owner-only lockdown") | UI, or `docker exec authentik-server-1 ak shell -c '…'` | — |
 | monitoring | Gatus "Pokescanner" (vigil) → `/health` every 5 min; homepage tile (arr) | emitted by the denils feature aspect; `update-vigil` / `update-arr` after changes | denils |
 
 ## P2 on-device assets (caching)
@@ -33,15 +33,84 @@ design in `docs/POKESCANNER-PLAN.md`.
 
 ## Auth model (read this before touching it)
 
-- `/identify`, `/trace/*`, `/collection/add` require `Authorization: Bearer $POKESCANNER_TOKEN`.
-  `/health`, `/bundle`, `/ref/*`, `/live*`, `/collection/status` are open on the service.
-- pokecollector's backend calls `http://10.0.1.40:8000` over the LAN with the token
-  (`EXTERNAL_MATCHER_TOKEN` in its `.env`).
-- On `scan.nilss.dev`, Caddy puts `/live*` and `/collection/*` behind Authentik; the rest
-  is bearer-only. **Until 2026-10-06T18:30Z `/live*` is public** (see "Public demo"). **The live page therefore needs the token in the browser** (`?token=` once,
-  stored in localStorage) — see "Known problems" in `status.md` for the planned fix.
+**scan.nilss.dev is owner-only since 2026-09-30** (owner's decision). Two layers:
 
-## Public demo (temporary, until 2026-10-06T18:30:00Z)
+1. **Caddy + Authentik:** every path on `scan.nilss.dev` (the `/live*`, `/collection/*` and
+   catch-all handles) has forward-auth; only `/outpost.goauthentik.io/*` is open (the
+   outpost callback). The Authentik app `pokescan-live` is bound to the owner's user only.
+2. **The service (pokescan ddb93b8):**
+   - `/identify`, `/price/*`, `/bundle`, `/trace/*`, `/collection/add`,
+     `/public/stats`, `/live/loadlog` need `Authorization: Bearer $POKESCANNER_TOKEN`.
+   - `/ref/*` and the full `/health` need a *trusted caller*. That is any of: the bearer; a
+     direct LAN/loopback peer that is not Caddy (Gatus on vigil, pokecollector on CT 100,
+     curl on the host); or Caddy (10.0.0.1, `POKESCANNER_TRUSTED_PROXIES`) with
+     `X-Authentik-Username` in `POKESCANNER_SSO_USERS` (denils: `nils`). The page's
+     `<img src=/ref/…>` gets through on that SSO header.
+   - Anyone else gets `{"ok":true}` from `/health` and 401 from `/ref`.
+   - `CDN-Cache-Control: no-store` is on every response, so Cloudflare never serves a copy
+     of something fetched with the owner's session.
+   - `/live*` and `/collection/status` stay open on the service; Caddy guards them.
+- pokecollector's backend calls `http://10.0.1.40:8000` over the LAN with the token
+  (`EXTERNAL_MATCHER_TOKEN` in its `.env`), so Caddy doesn't affect it. Gatus uses
+  `http://10.0.1.40:8000/health` over the LAN and still gets the full body, `disk` included.
+- The live page still needs the bearer in the browser for `/identify` and `/price` (`?token=`
+  once, stored in localStorage). `/health`, `/ref` and the model files come through on the
+  SSO session.
+
+## Owner-only lockdown (2026-09-30)
+
+- **Authentik** (CT 100):
+  - App `pokescan-live` has two bindings, mode `any`:
+    - order 0: user binding → `nils` (pk 5, djnilse@gmail.com);
+    - order 1: expression policy **"pokescan-live: owner only (logged)"** (`request.user.pk
+      == 5`, `execution_logging` on). It grants nothing extra; it exists so that every access
+      decision becomes a `policy_execution` event.
+  - Checked with `PolicyEngine`: ulla, lucas, antje, julien, gigi and a throwaway user
+    (deleted) are DENIED; nils passes.
+  - Until 2026-09-30, only `nils` had ever authorized the app.
+  - No other app's bindings and no flows were changed.
+- **Login alerts → ntfy** (same topic as PBS/PVE/ZED, see ops memory):
+  - Notification rule **"pokescan-live: logins + denials"** (severity notice).
+  - Filter: expression policy **"pokescan-live: notify filter"**.
+  - Transport: **"ntfy (pokescan-live)"**, webhook to `https://ntfy.sh/` with `send_once`. The
+    JSON publish body comes from the webhook mapping **"ntfy: pokescan-live alert"**, which
+    carries the topic.
+  - Destination: group `authentik Admins`. The webhook creates no stored notification.
+  - Alerts:
+    - **login** (priority 3): `authorize_application` for `pokescan-live`, i.e. each new
+      scan.nilss.dev session;
+    - **access DENIED** (priority 4): the logged guard fails on `/application/o/authorize…`.
+      App-library listings are ignored;
+    - **failed login** (priority 4): `login_failed` whose flow `next` names the pokescan
+      client_id or scan.nilss.dev.
+  - Denials and failed logins are deduplicated for 10 minutes per user or IP (Django cache).
+    Logins are not deduplicated.
+  - Tested 2026-09-30 07:19 UTC: a throwaway user's denial reached ntfy ("access DENIED for
+    pokescan-denytest").
+- **Caddy:** the catch-all handle `a8c1116b…` got ForwardAuth=1 (description "everything else
+  (SSO, owner-only)"). Backup: `/conf/config.xml.bak-pokescan-lockdown-20260930`.
+  `/root/pokescan_forwardauth.py on|off|status` now switches `/live*` and the catch-all
+  together. `on` is the owner-only state.
+- **Verified from outside** without a cookie, 2026-09-30: every path answers 302 to
+  auth.nilss.dev, including `/`, `/live`, versioned assets, model files, `/health`, `/ref`,
+  `/price`, `/bundle`, `/trace`, `/public/stats`, `/docs`, `/openapi.json`, `POST /identify`
+  and `POST /collection/add`. A forged `X-Authentik-Username` header changes nothing. Seen
+  from Caddy's IP without SSO: `/health` = `{"ok":true}`, `/ref` 401; with the header: full
+  and 200.
+
+**Re-enable sharing:**
+- *Another signed-in person:* add a user or group binding on `pokescan-live`, and extend the
+  guard's expression if their denials shouldn't alert. Also add the username to `ssoUsers`
+  (`POKESCANNER_SSO_USERS` in `pokescan-serve.nix`) or clear it. Without that their `/ref`
+  thumbnails return 401. They also need the bearer in their browser.
+- *Anonymous public demo:*
+  1. Run `ssh root@10.0.0.1 /usr/local/bin/python3 /root/pokescan_forwardauth.py off`; this
+     opens `/live*` and the catch-all.
+  2. Set `publicUntil = "<ISO>"` in denils, then run `update-pokescanner` and
+     `systemctl restart pokescanner`.
+  3. Undo with `public_demo_off.sh`. The Cloudflare side is managed separately.
+
+## Public demo (ENDED 2026-09-29 23:29; inert since the 2026-09-30 lockdown)
 
 Owner-approved 2026-09-29. `POKESCANNER_PUBLIC_UNTIL` (denils `publicUntil`) makes the service
 answer visitors **without** the bearer on `POST /identify` and `GET /price/*` while
