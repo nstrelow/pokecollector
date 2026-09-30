@@ -9,7 +9,7 @@ State: pokescan `live` = ddb93b8 (bundle v14, speed-ups e03d629, owner-only lock
 
 ### Owner
 - [x] Open `/live` on the phone after the Authentik login: page, thumbnails and prices load under SSO (owner confirmed 2026-09-30 22:41).
-- [x] DONE 2026-09-30: 2.9 fps / 786 ms (was 2.3 / 1090). worker 575-629 ms (was 816-1031), decode 0, no-card 160-179 ms (was 302-432), crop encode 17 ms (was 120), net 86-103 ms. Left: tower run 240-260 ms + localize lock wait 93-149 ms = GPU-bound (~330 ms GPU/frame). Original item: Expect: `localiser webgpu (TTA 4)`, `frame→GPU texture`,
+- [x] DONE 2026-09-30: 2.9 fps / 786 ms (was 2.3 / 1090). worker 575-629 ms (was 816-1031), decode 0, no-card 160-179 ms (was 302-432), crop encode 17 ms (was 120), net 86-103 ms (measured on the owner's HOME wifi, not 5G; on 5G expect net ~270 ms again; owner saw up to 8 fps at home, mostly no-card/light frames). Left: tower run 240-260 ms + localize lock wait 93-149 ms = GPU-bound (~330 ms GPU/frame). Original item: Expect: `localiser webgpu (TTA 4)`, `frame→GPU texture`,
       `decode` ~0, separate `readback`, new `steps:` line (localize prep/wait/run/post, tower wait/run), real KB on the crop row.
       Phone re-downloads the tower once (cache key `pokescan-models-v14`).
 - [ ] Decide GitHub: (a) make `live` the default branch of nstrelow/pokescan, (b) separate clean scanner-app repo, (c) make public after review.
@@ -20,6 +20,7 @@ State: pokescan `live` = ddb93b8 (bundle v14, speed-ups e03d629, owner-only lock
 - [ ] Anonymous test-data collection from visitors was denied as PII; only revisit if the owner adds a permission rule / re-authorises explicitly.
 
 ### Claude
+- [ ] Re-measure on 5G (away from home wifi) and record fps range + net; home wifi numbers are the best case.
 - [ ] Next speed step, GPU-bound on the tower: (a) while a card is LOCKED run only the localizer (no tower) until it is removed; (b) skip the tower when the tracked quad barely moved; (c) ORT graph capture.  Original note: Ideas: ORT WebGPU graph capture + gpu-buffer outputs for the tower, cheaper `grab` (39-71 ms, two willReadFrequently canvases), batch-1 tower warm-up (needs fallback-test rework).
 - [ ] Cloudflare edge layer (deferred; see the section at the bottom): Access with Authentik as IdP, EU/EEA+UK+CH geo filter, bot filter. Needs a scoped token in /root/.config/cloudflare/token or owner clicks.
 - [ ] `/docs` and `/openapi.json` still open to LAN callers; lock or disable if wanted.
