@@ -3,6 +3,41 @@
 Open work on the scanner, newest first. State lives in `docs/status.md`; this file is the
 backlog. Each item says why, what to measure first, and when it is done.
 
+## Morning report 2026-10-02 (overnight run 03:10 -> 07:00)
+
+**Live now: pokescan `cdce949`** (bundle v14 unchanged; denils `5b79493`). Rollback: pin `ddb93b8`.
+Owner-only lockdown intact: every outside path -> 302 Authentik (checked after both deploys).
+
+Shipped (each built by one subagent, reviewed by another, all tests passing, none skipped):
+- Tower skip while LOCKED / unmoved + card-look swap check (reviewer added it: same-spot swap now caught at once, not after 2 s); cheaper camera grab.
+- Locked-card localizer pacing (~4 fps, `?lockfps=N`, 0 = off).
+- Binary /identify body (153 -> 109 KB, bit-identical results; JSON still accepted); parser fuzz-hardened (reviewer fixed two 500s).
+- /docs, /redoc, /openapi.json owner-only.
+- Prices schema 2: headline matches the card's variant; EN fallback only for de/fr/es/it/pt with same set+number (reviewer blocked a wrong-card price on ja neo4-100..113). Unpriced ja cards still show nothing (no reliable ja->en mapping).
+- Opt-in `?gc=1` graph-captured tower (falls back to the normal tower on any failure; stale-output probe). Unmeasured on a real GPU.
+- int8-serve merged (measurement only, no behaviour change).
+No recognition defaults changed, so no gate was needed for the shipped set.
+
+Ready, NOT deployed (candidate branch `live-next` e672bca = cdce949 + both below; 276 py + 175 node tests pass):
+- **SSO instead of the browser token** (`live-sso` c09923f, security-reviewed; reviewer fixed a CSRF gap and a loopback XFF spoof). After deploy: open /live, no token prompt; then rotate the token (steps in the live-sso report / below).
+- **Sideways cards `?side2=1`** (opt-in, default off): sideways auto-correct 25 -> 53 of 64, upright identical, 0 silent wrong, hold-out silent wrong 4 (= live1) thanks to a second-view guard (gap >= 0.05). Cost: tower batch 2 on sideways frames only.
+
+Branch consolidation:
+- pokescan: every app branch (live-*, p2-*, serve, int8-serve, lockdown, live-v14) is in `live`. Not merged, by agreement: the `pokescanner` session's lanes (ja-promos, ja-taps2, live-v16, partq, classic-num, cp6, ecard-reader, promo-guard). Merged branches/worktrees not deleted (safe to prune later).
+- pokecollector: fork/main merged into `pokescanner`; `local-image-matching` NOT merged (abandoned pHash scanner, 5 conflicts, superseded per PLAN).
+
+Your decisions:
+1. Deploy `live-next` (SSO + opt-in side2)? Then rotate the token: new value via `openssl rand -hex 32` -> agenix `secrets/pokescanner-env.age` POKESCANNER_TOKEN -> `update-pokescanner`; same value in pokecollector `.env` on CT 100 -> restart; old token must 401.
+2. Make side2 the default after a phone try with `?side2=1`?
+3. The `pokescanner` session's `live-v16` (gallery v15/v16, JP promos) candidate.
+4. Still open: GitHub repo option, allow_spinning=0, +1 GB RAM, Cloudflare layer, DP-era refs (pokeassets owner decisions).
+
+Retest on the phone (also on 5G, away from wifi):
+- Drawer "tower skip" row: `tower k/n`, "paced"; header fps while a card is locked; swap a card in the same spot -> new result quickly.
+- `?gc=1`: device line `gc on`, compare tower run with 239-263 ms.
+- Crop/identify net time on 5G (binary body).
+- A price on a holo-only and a reverse-capable card.
+
 ## Overnight plan 2026-10-02 (autonomous run 03:10 -> ~09:00, owner-scheduled)
 
 Start state: live ddb93b8 on CT 140 (bundle v14, owner-only lockdown), uptime 42 h, no warnings.
