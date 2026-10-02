@@ -8,10 +8,12 @@ design in `docs/POKESCANNER-PLAN.md`.
 | Piece | Where | How it's managed | Repo |
 |---|---|---|---|
 | pokescanner service (`pokescan.serve`) | CT 140 `pokescanner`, 10.0.1.40:8000, NixOS, 8 cores / 3 GB (cores 4 -> 8 on 2026-09-29, ORT threads stay 4) | denils (`modules/aspects/features/pokescan-serve.nix`, `hosts/pokescanner.nix`), `nix run .#update-pokescanner` | `/root/denils` |
-| pokescan source the service runs | `/tank/pokescan/src` (git checkout, branch `live`), bind-mounted ro at `/var/lib/pokescanner/src` | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
+| pokescan source the service runs | `/tank/pokescan/src` (git checkout of the trunk `master` = `live` = `plan-a`; **9d26328 since 2026-10-02**), bind-mounted ro at `/var/lib/pokescanner/src` (mp1) | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
 | model bundle v12 | `/tank/pokescan/bundle-v12` (1.6 GB incl. `ref_thumbs_v12/`), ro at `/var/lib/pokescanner/bundle` | rebuilt with `scripts/export_serve_bundle.py --out <newdir>` from a pokescan worktree; new versions get a NEW dir, then change `bundleDir` in the nix file | pokescan |
 | model bundle v12p3 | `/tank/pokescan/bundle-v12p3` (1.98 GB: v12 + `client/` towers fp16 172.9 MB / fp32 345.1 MB / int8wo 87.8 MB + unet 0.6 MB; bundle sha 0fac0cf6b1b1) | CT 140 mp0 2026-09-29 evening → 2026-09-30 (now the rollback bundle); the page picks the tower per device (WebGPU+shader-f16 → fp16, WebGPU → fp32, else int8wo). Rollback = mp0 → bundle-v12p2 (+ `pct reboot 140`) | pokescan |
-| model bundle v14 | `/tank/pokescan/bundle-v14` (2.33 GB: gallery v14 = 79,421 prints incl. English Classic + fr/it/pt/es SV/ME refs, `names_v14.json`, `ref_thumbs_v14/` 79,397, `client/` towers byte-identical to v12p3; bundle sha b7b8e8532325) | CT 140 mp0 since 2026-09-30 ~03:45 Berlin, code pokescan `live` 15d4869 (denils 6ad3ab7). Rollback: see "Roll back the v14 deploy" below | pokescan |
+| model bundle v14 (historical) | `/tank/pokescan/bundle-v14` (2.33 GB: gallery v14 = 79,421 prints incl. English Classic + fr/it/pt/es SV/ME refs, `names_v14.json`, `ref_thumbs_v14/` 79,397, `client/` towers byte-identical to v12p3; bundle sha b7b8e8532325) | CT 140 mp0 2026-09-30 → 2026-10-01, code pokescan `live` 15d4869 (denils 6ad3ab7); replaced by v18/v20/v22/v23 (see the deploy blocks below) | pokescan |
+| **model bundle v23 (current)** | `/tank/pokescan/bundle-v23` (gallery v22 + bank v22g + twins v24, sha 84df050d5e36; client towers byte-identical to v22) | CT 140 **mp0 since 2026-10-02**, code pokescan 9d26328 (denils b65ced3). Health = 9d26328 / v22 / 84df050d5e36 | pokescan |
+| model bundle v22 (rollback) | `/tank/pokescan/bundle-v22` (sha 3d0eb299dc48) | kept for rollback: `checkout d43e4cc`, mp0 → bundle-v22, denils `commit = "d43e4cc"` (see "Current rollback" below) | pokescan |
 | service secrets | denils `secrets/pokescanner-env.age` → `/run/agenix/pokescanner-env` (root 0400, read by systemd `EnvironmentFile`) | keys: `POKESCANNER_TOKEN` (API bearer), `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (pokecollector user `pokescanner`) | denils |
 | traces | CT 140 `/var/lib/pokescanner/traces/` (local disk, NOT backed up); one dir per `debug=1` identify: `trace.json` (full top-k, geometry), `source.jpg`, `plane.webp`, `overlay.webp` (~120–760 KB); no-card states keep only json + small overlay | swept by the service at startup + hourly: `POKESCANNER_TRACE_KEEP_DAYS` (90) then `POKESCANNER_TRACE_MAX_GB` (10), oldest first — knobs in `pokescan-serve.nix` (`traceKeepDays`, `traceMaxGb`) | pokescan `serve/app.py` `sweep_traces` |
 | CT 140 rootfs | `pool/subvol-140-disk-0`, **20 GB** since 2026-09-29 (was 8) | grow with `pct resize 140 rootfs <N>G` (online), then set `proxmox.disk` in `hosts/pokescanner.nix` and run a tofu `apply -refresh-only` in `~/.local/share/den-lxc/pokescanner` so `check-drift` is clean (never `provision-*`) | denils |
@@ -29,7 +31,7 @@ design in `docs/POKESCANNER-PLAN.md`.
   deploy never pairs a new page with a stale worker; only `/live/p2/ort/**` (vendored
   onnxruntime-web, changes only with `VENDORED.md`) is `max-age=86400`.
 * These routes are GET-only: `curl -I` gets 405, use `curl -s -o /dev/null -D -`.
-* `POKESCANNER_LIVE_ISOLATED` (COOP/COEP → threaded Wasm) is still OFF.
+* `POKESCANNER_LIVE_ISOLATED=1` (COOP/COEP → threaded Wasm) has been ON since the v18 deploy (status.md, "Misc TODOs live 2026-09-29").
 
 ## Auth model (read this before touching it)
 
@@ -168,7 +170,9 @@ Cloudflare fronts scan.nilss.dev and ignored `no-cache` on the live page's `.js`
 
 ## Common operations
 
-**Update the service code** (pokescan branch `live` or its successor):
+**Current rollback (2026-10-03):** `git -C /tank/pokescan/src checkout d43e4cc`, mp0 → `/tank/pokescan/bundle-v22`, denils `commit = "d43e4cc"` + bundle comment, `nix run .#update-pokescanner`, `systemctl restart pokescanner`; health = d43e4cc / v22 / 3d0eb299dc48.
+
+**Update the service code** (pokescan trunk `master` = `live` = `plan-a`):
 ```
 git -C /tank/pokescan/src fetch origin && git -C /tank/pokescan/src checkout <rev>
 # path unit restarts it; confirm:
@@ -326,6 +330,23 @@ curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}
 If `live` moved past b07fabc first, merge it into live-v23 and re-run the tests. **Rollback:** `checkout
 b07fabc`, mp0 -> `/tank/pokescan/bundle-v22`, denils `commit = "b07fabc"`, update + restart; health =
 b07fabc / v22 / 3d0eb299dc48.
+
+**v24 + session log v2 — DEPLOYED 2026-10-02** as 9d26328 (`live-sessionlog2` on en-langflag d43e4cc = v24:
+th/id language flag → one tap, 0 new saves; session log v2 adds false detections, card gaps and the model-wait split),
+denils b65ced3; rollback d43e4cc + bundle-v22. Gallery still v22, bundle still `/tank/pokescan/bundle-v23`
+(sha 84df050d5e36), so the device model cache key did not change. Gate 0/132 changed on v23, negatives 0/134,
+device unchanged. Deploy (Proxmox host), the v23 pattern with the code step only:
+```
+cd /root/denils && git pull
+git -C /tank/pokescan/src fetch origin && git -C /tank/pokescan/src checkout 9d26328
+# master / live / plan-a already contain 9d26328 (merged, never forced)
+# denils: commit = "9d26328" in modules/aspects/features/pokescan-serve.nix (bundle-v23 unchanged; rollback d43e4cc + bundle-v22);
+# commit, push, nix run .#update-pokescanner, then:
+ssh root@10.0.1.40 systemctl restart pokescanner
+curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}'   # 9d26328 / v22 / 84df050d5e36
+```
+**Rollback:** `checkout d43e4cc`, mp0 -> `/tank/pokescan/bundle-v22`, denils `commit = "d43e4cc"`, update + restart;
+health = d43e4cc / v22 / 3d0eb299dc48. Owner review of the session log: `/live/sessions`.
 
 **Change SSO scope** (which paths need login): edit the `ForwardAuth` flag on the
 `scan.nilss.dev` handles in `/conf/config.xml` (script pattern: python + `ET`, never sed on

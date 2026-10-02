@@ -1,5 +1,7 @@
 # pokescanner — latency plan (2026-09-29)
 
+Status: DONE (historical); current state in `docs/status.md`.
+
 Owner: "the result is super cool, but latency is there — can we make it better?"
 
 ## Measured baseline (CT 140, 4 vCPU, host load ~3, real photo, `debug=1`)

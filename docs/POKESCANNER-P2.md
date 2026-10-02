@@ -1,5 +1,7 @@
 # pokescanner P2 — on-device embedding, hybrid retrieval
 
+Status: DONE (historical); current state in `docs/status.md`.
+
 Full plan + a pickup prompt (bottom). Design context: `POKESCANNER-PLAN.md` §7 P2, decisions §2
 (owner 2026-09-28: int8 on-device CLIP ~85 MB OK, fp32 rejected (~1 GB resident kills mobile
 tabs), no smaller tower, P3 = fully offline later). Latency work that runs in parallel:
