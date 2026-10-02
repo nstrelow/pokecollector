@@ -299,7 +299,7 @@ picker). If `live` moved past 7045960 first, merge it into live-v22 and re-run t
 `checkout 7045960`, mp0 -> `/tank/pokescan/bundle-v20`, denils `commit = "7045960"`, update + restart;
 health = 7045960 / v20 / 60f0cc5fc797.
 
-**Candidate: v23** (not deployed; owner decides). pokescan branch `live-v23` 47a0e6b = live b07fabc (v22)
+**v23 — DEPLOYED 2026-10-02** as 1818455 (live-v23 47a0e6b + owner session log `live-sessionlog`), denils c0d00ab; rollback b07fabc + bundle-v22. Originally: pokescan branch `live-v23` 47a0e6b = live b07fabc (v22)
 fast-forwarded through `en-sinks` (veto-only: e-card H-holo twins need their own number evidence; a WotC
 Black Star promo save under 0.82 without its own number becomes a tap) and `en-numbers` (bank v22g: a
 last-resort WotC/Evolutions number-strip template tier, so Base Set / Base Set 2 / Legendary Collection /

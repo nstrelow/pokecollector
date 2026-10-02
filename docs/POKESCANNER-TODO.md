@@ -3,7 +3,7 @@
 Open work on the scanner, newest first. State lives in `docs/status.md`; this file is the
 backlog. Each item says why, what to measure first, and when it is done.
 
-## Session log (owner decisions 2026-10-02, branch `live-sessionlog`, not deployed)
+## Session log (owner decisions 2026-10-02) — DEPLOYED 1818455 with v23; open: phone check on /live/sessions, Caddy strip client X-Authentik-* headers, labels.jsonl consumer
 Why: everything the drawer measures dies with the tab; only the model-load log reaches the server.
 Owner-only (logged-in) sessions; nothing for visitors.
 - **Delivery:** summary so far every 30 s + on pagehide (sendBeacon); failed sends queued in IndexedDB and
