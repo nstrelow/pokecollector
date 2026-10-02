@@ -273,7 +273,7 @@ Cloudflare trap) and a real /identify. If `live` moved past 33fa456 first, merge
 re-run the tests before deploying. **Rollback:** `checkout 33fa456`, mp0 → `/tank/pokescan/bundle-v18`,
 denils `commit = "33fa456"`, update + restart; health = 33fa456 (tree of d6f9330) / v18 / af05805bdf15.
 
-**Candidate: v22** (not deployed; owner decides). pokescan branch `live-v22` b07fabc = live 7045960 (v20)
+**v22 DEPLOYED 2026-10-02 ~14:00** (owner OK; live b07fabc, denils e1247cb, health b07fabc / v22 / 3d0eb299dc48). pokescan branch `live-v22` b07fabc = live 7045960 (v20)
 fast-forwarded through `dp-v21` (gallery v21: 519 second references, scans next to the 162 px DP6 / Pt1-4
 images) and `dp-v22` (gallery v22: 45 more DP-era Japanese cards from the final pokeassets table, picker-only;
 `hints_v22.json` = 90 hints, supersedes hints_v20). Bundle `/tank/pokescan/bundle-v22`, sha 3d0eb299dc48,
