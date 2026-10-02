@@ -3,6 +3,15 @@
 Open work on the scanner, newest first. State lives in `docs/status.md`; this file is the
 backlog. Each item says why, what to measure first, and when it is done.
 
+## Update 2026-10-02 ~10:40 (owner decisions 09:15)
+- Live **d6f9330** on bundle **v18** (pokescanner session deployed v18 = 7b9a53c; this session added opt-in `?side2=1` + ORT allow_spinning=0, gate 0/132 changed, CPU/frame ~2.4x lower; `POKESCANNER_ORT_SPIN=1` reverts). denils 9d2b66b.
+- CT 140 RAM 3 -> 4 GB (live `pct set`, denils c6025f3).
+- **Trunk:** pokescan `master` = `plan-a` = `live` = 33fa456 (tree == deployed d6f9330). New lanes branch from master. Kept as copies: partq (waits for phone photos), live-sso (owner: later), live-next. pokecollector `main` = `pokescanner` (fork); `local-image-matching` archived, unmerged.
+- [ ] Re-gate side2 on bundle v18 before making it default (25->53 was measured on v14).
+- [ ] Check retrieve ms in CT 140 traces with spinning off.
+- [ ] Owner: phone retest with `?side2=1` (sideways + upright) and `?gc=1`; 5G numbers.
+- [ ] Later: live-sso deploy + token rotation; Cloudflare; GitHub default is master (already).
+
 ## Morning report 2026-10-02 (overnight run 03:10 -> 07:00)
 
 **Live now: pokescan `cdce949`** (bundle v14 unchanged; denils `5b79493`). Rollback: pin `ddb93b8`.
