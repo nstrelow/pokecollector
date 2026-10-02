@@ -29,8 +29,8 @@ server call. Fallback: any failure on the device → the P1 JPEG path, automatic
 ## Work breakdown (each step is testable on its own; ~1–2 days total)
 
 **S0. Branch.** `p2-device` off `origin/live` (after `live-ui` and `live-fast` have merged, or
-rebase later; until then don't edit `live.js`). Worktree `/srv/repos/pokescan-wt/p2`, `data`
-symlink to `/srv/repos/pokescan-wt-r2/data`, venv `/srv/repos/pokescan-wt-r2/.venv`.
+rebase later; until then don't edit `live.js`). Worktree `/srv/repos/PicaLens/scanner/worktrees/p2`, `data`
+symlink to `/srv/repos/PicaLens/scanner/worktrees/r2/data`, venv `/srv/repos/PicaLens/scanner/worktrees/r2/.venv`.
 
 **S1. Server JSON mode** (`app.py`, `schema.py`, tests in `tests/test_serve.py`):
 `POST /identify` with `Content-Type: application/json`
@@ -116,16 +116,16 @@ Yes, with three guards:
 
 ```
 Implement pokescanner P2 (on-device CLIP embedding, hybrid retrieval) following
-/srv/repos/pokecollector/docs/POKESCANNER-P2.md exactly, steps S0–S7 in order. Read first:
+/srv/repos/PicaLens/collection/pokecollector/docs/POKESCANNER-P2.md exactly, steps S0–S7 in order. Read first:
 that file, docs/POKESCANNER-PLAN.md §2/§4.2/§7, docs/POKESCANNER-LATENCY.md (Results), the
 pokescan files it names (retrieve/clip.py, localize/maskfit.py, geometry.py, rotation.py,
 serve/app.py, serve/schema.py, serve/static/live/*), docs/PLAN-A-LOG.md last entries, and the
 memory notes pokescanner-integration.md + pokescan.md. Work in worktree
-/srv/repos/pokescan-wt/p2 on branch p2-device off origin/live; don't touch live.js until
+/srv/repos/PicaLens/scanner/worktrees/p2 on branch p2-device off origin/live; don't touch live.js until
 origin/live contains the live-ui and live-fast merges (check git log), then rebase. Vendor
 onnxruntime-web, hash-check downloads, Cache Storage for model bytes, fallback to the server
 JPEG path on any device error. Heavy CPU only with nice -n 10 and --threads 6, gate once. Tests
-per S6 must pass (PYTHONPATH=src /srv/repos/pokescan-wt-r2/.venv/bin/python -m pytest
+per S6 must pass (PYTHONPATH=src /srv/repos/PicaLens/scanner/worktrees/r2/.venv/bin/python -m pytest
 tests/test_serve.py tests/test_serve_live.py -q + node tests). Deploy per S7 only after tests are
 green and the gate numbers are recorded; never run provision-pokescanner; after a nix switch
 always ssh root@10.0.1.40 systemctl restart pokescanner and re-check /health. Commit often on

@@ -189,7 +189,7 @@ is handled separately.
    swap the creds in the secret when done testing).
 
 **Pitfalls hit (so nobody hits them twice)**
-- pokescan main checkout `/srv/repos/pokescan` is stale; v12 assets live only in
+- pokescan main checkout `/srv/repos/PicaLens/scanner/pokescan` is stale; v12 assets live only in
   `pokescan-wt-r2/data`. The serve/live worktrees symlink into it.
 - `models/segdata.py` imported torch on the inference path → the CT (no torch) crash-looped;
   fixed by `models/letterbox.py`. Test with `sys.modules['torch']=None`.

@@ -27,9 +27,9 @@ lane in status.md ─► worker (worktree, branch lane/<name>) ─► report ─
 
 ## Lane environment
 
-- `pokescan`: worktree under `/srv/repos/pokescan-wt/<lane>` from `origin/plan-a`
+- `pokescan`: worktree under `/srv/repos/PicaLens/scanner/worktrees/<lane>` from `origin/plan-a`
   (8f0ff3b pinned for the PoC); `data/` is symlinked from the main checkout; run with
-  `PYTHONPATH=$PWD/src` and the venv at `/srv/repos/pokescan/.venv`.
+  `PYTHONPATH=$PWD/src` and the venv at `/srv/repos/PicaLens/scanner/pokescan/.venv`.
 - `denils`: work on a branch in `/root/denils` (always `git pull` first, push after);
   new host = `provision-<host>`, existing host = `update-<host>` (see memory
   `denils-terraform-drift-trap`).

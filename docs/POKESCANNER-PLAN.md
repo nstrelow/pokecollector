@@ -4,7 +4,7 @@ Status: **approved plan, nothing implemented yet** (2026-09-28).
 Branch: `pokescanner` on `nstrelow/pokecollector`, based on upstream `main` d18db13.
 Supersedes PR #4 (`local-image-matching`, pHash) — that branch is abandoned, not rebased.
 
-The scanner engine lives in a separate repo, `nstrelow/pokescan` (`/srv/repos/pokescan`),
+The scanner engine lives in a separate repo, `nstrelow/pokescan` (`/srv/repos/PicaLens/scanner/pokescan`),
 pinned for this PoC at **`origin/plan-a` 8f0ff3b with the v12 bundle** (`data/bundle.json`
 hash-checks every asset; `Bundle.load` refuses anything else).
 
