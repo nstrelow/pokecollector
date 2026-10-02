@@ -252,7 +252,7 @@ curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}
 ```
 The next gallery gets its own `bundle-vN` beside these; the same steps with its sha deploy it.
 
-**Candidate: v20** (not deployed; owner decides). pokescan branch `live-v20` 7045960 = live 33fa456
+**v20 DEPLOYED 2026-10-02 ~12:45** (owner OK; live 7045960, denils bdac1bd, health 7045960 / v20 / 60f0cc5fc797). pokescan branch `live-v20` 7045960 = live 33fa456
 (v18 + opt-in side2 + ORT spin off) + `dp-era` (gallery v19 promos + v20 DP-era Japanese, 1,199 rows,
 picker-only, tap-only) + `classic-strip` (Classic outlined number fallback, bank v18f). Bundle
 `/tank/pokescan/bundle-v20`, sha 60f0cc5fc797, 82,926 prints; client towers byte-identical to v18.
