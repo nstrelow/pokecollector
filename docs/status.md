@@ -2,7 +2,20 @@
 
 Read this first. Plan: `docs/POKESCANNER-PLAN.md`. Ops/runbook: `docs/POKESCANNER-OPS.md`. Latency plan: `docs/POKESCANNER-LATENCY.md`. P2 plan + pickup prompt: `docs/POKESCANNER-P2.md`. Backlog: `docs/POKESCANNER-TODO.md`. Workflow: `docs/agent-workflow.md`.
 
-## State on 2026-09-29 ~01:00 (end of the overnight run)
+## Live now (2026-10-03)
+
+- **Scanner service:** pokescan `9d26328` (session log v2 on v24 `d43e4cc`; gallery stays v22) on CT 140
+  `10.0.1.40:8000` (scan.nilss.dev), bundle `/tank/pokescan/bundle-v23` (mp0), source `/tank/pokescan/src` (mp1),
+  denils `b65ced3`. `POKESCANNER_LIVE_ISOLATED=1` (threaded Wasm) is on.
+- **Rollback:** `d43e4cc` + `/tank/pokescan/bundle-v22` (recipe: `docs/POKESCANNER-OPS.md`, "Common operations").
+- **Trunk:** pokescan `master` = `live` = `plan-a`; lanes merge into master, never force-pushed.
+- **Repos:** everything lives under `/srv/repos/PicaLens` since 2026-10-03 (`scanner/pokescan`, `scanner/worktrees/<lane>`,
+  `collection/pokecollector`, …; cross-repo state in `/srv/repos/PicaLens/HANDOFF.md`).
+- **Health:** `curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}'` → `9d26328 / v22 / 84df050d5e36`.
+
+The sections below are dated snapshots (newest first) kept as history.
+
+## History — state on 2026-09-29 ~01:00 (end of the overnight run; superseded by "Live now")
 
 **P1 is built and the scanner service is live on CT 140.** What is NOT done is the one
 step the permission system blocked: deploying this branch to the live pokecollector on
@@ -190,7 +203,7 @@ is handled separately.
 
 **Pitfalls hit (so nobody hits them twice)**
 - pokescan main checkout `/srv/repos/PicaLens/scanner/pokescan` is stale; v12 assets live only in
-  `pokescan-wt-r2/data`. The serve/live worktrees symlink into it.
+  `scanner/worktrees/r2/data`. The serve/live worktrees symlink into it.
 - `models/segdata.py` imported torch on the inference path → the CT (no torch) crash-looped;
   fixed by `models/letterbox.py`. Test with `sys.modules['torch']=None`.
 - A NixOS switch that changes both the agenix secret and the unit can restart the service on

@@ -1,6 +1,6 @@
 # pokescanner integration plan
 
-Status: **approved plan, nothing implemented yet** (2026-09-28).
+Status: **implemented** (P1 live 2026-09-29, P2 on-device 2026-09-30; current state in `docs/status.md`, "Live now"). Historical as of 2026-10-03; the original status line was "approved plan, nothing implemented yet (2026-09-28)".
 Branch: `pokescanner` on `nstrelow/pokecollector`, based on upstream `main` d18db13.
 Supersedes PR #4 (`local-image-matching`, pHash) — that branch is abandoned, not rebased.
 
