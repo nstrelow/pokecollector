@@ -54,8 +54,8 @@ still green, `check-drift` clean.
 ## Lane 2 — faster tower on the server (int8 with an accuracy gate)
 
 Repo: pokescan, new worktree + branch `int8-serve` off `origin/live`
-(`git -C /srv/repos/pokescan-wt/live worktree add /srv/repos/pokescan-wt/int8 -b int8-serve origin/live`,
-symlink `data` → `/srv/repos/pokescan-wt-r2/data`, venv `/srv/repos/pokescan-wt-r2/.venv`).
+(`git -C /srv/repos/PicaLens/scanner/worktrees/live worktree add /srv/repos/PicaLens/scanner/worktrees/int8 -b int8-serve origin/live`,
+symlink `data` → `/srv/repos/PicaLens/scanner/worktrees/r2/data`, venv `/srv/repos/PicaLens/scanner/worktrees/r2/.venv`).
 Read first: `docs/NEXT-2026-09-22.md` §int8 (weight-only = quality-safe but **no CPU speedup**,
 it dequantises to fp32; `quantize_dynamic` = fast but **−6.1 pp** on B/16 → rejected),
 `scripts/export_int8_weightonly.py`, `scripts/exp_int8_fidelity.py`, `scripts/gate_cascade.py`
@@ -95,7 +95,7 @@ Commit on `int8-serve`, push, don't merge into `live` until the owner has seen t
 
 ## Lane 3 — fewer round trips from the page
 
-Repo: pokescan, branch `live-fast` off `origin/live`, worktree `/srv/repos/pokescan-wt/live-fast`.
+Repo: pokescan, branch `live-fast` off `origin/live`, worktree `/srv/repos/PicaLens/scanner/worktrees/live-fast`.
 Files: `src/pokescan/serve/static/live/consensus.js` (pure, node-tested in `tests/live/`),
 `live.js` (capture loop, in-flight limit), `tests/test_serve_live.py`. Another lane (`live-ui`,
 candidate strip) is editing `live.js`/`live.css`/`index.html` right now: keep `live.js` edits

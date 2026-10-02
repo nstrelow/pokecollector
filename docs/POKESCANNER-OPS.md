@@ -143,7 +143,7 @@ states per mode (server/device), rejections (`rate:<kind>`, `busy`, `size`), lat
 
 **Revert (one command, Proxmox host):**
 ```
-bash /srv/repos/pokescan-wt-public/scripts/public_demo/public_demo_off.sh
+bash /srv/repos/PicaLens/scanner/worktrees/public/scripts/public_demo/public_demo_off.sh
 # (same file in any pokescan checkout of `live`: scripts/public_demo/public_demo_off.sh)
 ```
 It turns forward-auth back on for `/live*` (`opnsense_forwardauth.py on`, timestamped
@@ -193,7 +193,7 @@ Then clear `pokescan.token` from the phone's localStorage (or open `/live?token=
 
 **Deploy a new pokecollector build** (branch `pokescanner`):
 ```
-git -C /srv/repos/pokecollector archive --format=tar.gz -o /tmp/pc.tgz fork/pokescanner
+git -C /srv/repos/PicaLens/collection/pokecollector archive --format=tar.gz -o /tmp/pc.tgz fork/pokescanner
 pct push 100 /tmp/pc.tgz /tmp/pc.tgz
 pct exec 100 -- sh -c 'cd /etc/komodo/stacks/pokecollector && docker tag pokecollector-backend:local pokecollector-backend:prev && docker tag pokecollector-frontend:local pokecollector-frontend:prev && rm -rf backend frontend && tar xzf /tmp/pc.tgz && docker compose -p pokecollector -f docker-compose.yml -f docker-compose.build.yml -f compose.tz.yml build && docker compose -p pokecollector -f docker-compose.yml -f docker-compose.build.yml -f compose.tz.yml up -d'
 curl -s https://poke.nilss.dev/api/health
@@ -261,7 +261,7 @@ Deploy (Proxmox host):
 ```
 cd /root/denils && git pull
 git -C /tank/pokescan/src fetch origin && git -C /tank/pokescan/src checkout 7045960   # or `live` after ff
-git -C /srv/repos/pokescan-wt-live20 push origin live-v20:live                       # ff only, never force
+git -C /srv/repos/PicaLens/scanner/worktrees/live20 push origin live-v20:live                       # ff only, never force
 pct set 140 -mp0 /tank/pokescan/bundle-v20,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140
 # denils: commit = "7045960" in modules/aspects/features/pokescan-serve.nix (+ bundle-v20 comment in
 # hosts/pokescanner.nix), commit, push, nix run .#update-pokescanner, then:
@@ -284,7 +284,7 @@ Deploy (Proxmox host), the v20 pattern:
 ```
 cd /root/denils && git pull
 git -C /tank/pokescan/src fetch origin && git -C /tank/pokescan/src checkout b07fabc
-git -C /srv/repos/pokescan-wt-dpv22 push origin live-v22:live      # ff from 7045960 only, never force
+git -C /srv/repos/PicaLens/scanner/worktrees/dpv22 push origin live-v22:live      # ff from 7045960 only, never force
 # also ff master / plan-a to b07fabc
 pct set 140 -mp0 /tank/pokescan/bundle-v22,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140
 # denils: commit = "b07fabc" in modules/aspects/features/pokescan-serve.nix and bundle-v22 in its
@@ -312,7 +312,7 @@ Deploy (Proxmox host), the v22 pattern:
 ```
 cd /root/denils && git pull
 git -C /tank/pokescan/src fetch origin && git -C /tank/pokescan/src checkout 47a0e6b
-git -C /srv/repos/pokescan-wt-v23 push origin live-v23:live          # ff from b07fabc only, never force
+git -C /srv/repos/PicaLens/scanner/worktrees/v23 push origin live-v23:live          # ff from b07fabc only, never force
 # also ff master / plan-a to 47a0e6b
 pct set 140 -mp0 /tank/pokescan/bundle-v23,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140
 # denils: commit = "47a0e6b" in modules/aspects/features/pokescan-serve.nix and bundle-v23 in its
