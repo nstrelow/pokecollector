@@ -299,6 +299,34 @@ picker). If `live` moved past 7045960 first, merge it into live-v22 and re-run t
 `checkout 7045960`, mp0 -> `/tank/pokescan/bundle-v20`, denils `commit = "7045960"`, update + restart;
 health = 7045960 / v20 / 60f0cc5fc797.
 
+**Candidate: v23** (not deployed; owner decides). pokescan branch `live-v23` 47a0e6b = live b07fabc (v22)
+fast-forwarded through `en-sinks` (veto-only: e-card H-holo twins need their own number evidence; a WotC
+Black Star promo save under 0.82 without its own number becomes a tap) and `en-numbers` (bank v22g: a
+last-resort WotC/Evolutions number-strip template tier, so Base Set / Base Set 2 / Legendary Collection /
+Evolutions twins resolve by set total). No gallery change (still v22). Bundle `/tank/pokescan/bundle-v23`,
+sha 84df050d5e36; client towers byte-identical to v22. Server gate 132/132 identical to v22, negatives 0/134,
+device gate 0/132 changed (same 11 failing rows); suite 984 pass (1 timing test that passes alone), node 170/170.
+Wild (report-only): en-sinks dev wrong saves 16 -> 8 on e-card twins, -4 Pichu promo; en-numbers 22 taps -> saves
+(dev), 0 new contradictions. SWSH299-301 not referenced: no approved source has them.
+Deploy (Proxmox host), the v22 pattern:
+```
+cd /root/denils && git pull
+git -C /tank/pokescan/src fetch origin && git -C /tank/pokescan/src checkout 47a0e6b
+git -C /srv/repos/pokescan-wt-v23 push origin live-v23:live          # ff from b07fabc only, never force
+# also ff master / plan-a to 47a0e6b
+pct set 140 -mp0 /tank/pokescan/bundle-v23,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140
+# denils: commit = "47a0e6b" in modules/aspects/features/pokescan-serve.nix and bundle-v23 in its
+# comment + modules/aspects/hosts/pokescanner.nix (pct set line + bundle comment; rollback bundle-v22);
+# commit, push, nix run .#update-pokescanner, then:
+ssh root@10.0.1.40 systemctl restart pokescanner
+curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}'   # 47a0e6b / v22 / 84df050d5e36
+```
+`bundle_version` stays v22 (same gallery), so the device model cache key does not change. Check /live (200),
+`/live/models/manifest.json` (tower file names unchanged) and a real /identify (an English Base Set card).
+If `live` moved past b07fabc first, merge it into live-v23 and re-run the tests. **Rollback:** `checkout
+b07fabc`, mp0 -> `/tank/pokescan/bundle-v22`, denils `commit = "b07fabc"`, update + restart; health =
+b07fabc / v22 / 3d0eb299dc48.
+
 **Change SSO scope** (which paths need login): edit the `ForwardAuth` flag on the
 `scan.nilss.dev` handles in `/conf/config.xml` (script pattern: python + `ET`, never sed on
 OPNsense's csh), then the two `configctl` commands. `/outpost.goauthentik.io/*` must stay
