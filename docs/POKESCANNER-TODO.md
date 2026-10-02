@@ -23,6 +23,13 @@ Priorities (reasoned):
 6. **Branch consolidation** of pokescan + pokecollector (coordinated with the `pokescanner` session).
 7. One deploy at the end, outside curl check (all paths 302), report.
 
+Progress (04:45):
+- [x] 1+2 tower skip + card-look swap check + cheaper grab: `live-skip` 3d2c382, reviewed (reviewer added the look check) -> **deployed 60c0ca2** (mid-night deploy, denils 6facd8d).
+- [x] 3 docs lock + 5 prices (schema 2 headline per variant, exact en fallback for de/fr/es/it/pt only; reviewer blocked a wrong-card fallback for ja neo4-100..113): `live-docsprice` 6a0c72e -> deployed 60c0ca2.
+- [x] int8-serve (measure-only) merged into live (no behaviour change).
+- [x] 4 graph capture opt-in `?gc=1`: `live-gcap` 255391b reviewed (fixed swap-on-failure + stale-output probe), merged in live-consol 6612e6c, not yet deployed.
+- [ ] Compact /identify payload (binary crop, base64 float32 vectors) + pace localizer while locked (~4 fps): `live-payload` in progress.
+
 Not tonight (needs the owner): sideways two-view decision, allow_spinning=0, +1 GB RAM, token rotation,
 Cloudflare, GitHub repo option.
 
