@@ -3,6 +3,31 @@
 Open work on the scanner, newest first. State lives in `docs/status.md`; this file is the
 backlog. Each item says why, what to measure first, and when it is done.
 
+## Session log (owner decisions 2026-10-02, branch `live-sessionlog`, not deployed)
+Why: everything the drawer measures dies with the tab; only the model-load log reaches the server.
+Owner-only (logged-in) sessions; nothing for visitors.
+- **Delivery:** summary so far every 30 s + on pagehide (sendBeacon); failed sends queued in IndexedDB and
+  re-sent next visit. Server keeps the latest summary per session id (idempotent upsert).
+- **Device/context:** UA + UA-CH model, screen, GPU adapter info, camera track settings (res, fps, focus
+  mode/distance, zoom, torch, lens/facing), battery + charging, visibility changes, memory, connection type,
+  upload bytes + RTT per request.
+- **Version compare:** commit, bundle version, flags (`?gc`, `?side2`, `?lockfps`, device/server mode).
+- **Time split:** per stage (DEV/SUB/PAGE stages + net + server) mean / p90 / max, split card / no-card / skip.
+- **Detection:** per card: time to lock, outcome (auto / tap / corrected / never), guess flicker +
+  wrong-before-right, lost-card frames with reason (NO_CARD / TOO_BLURRY / CARD_BACK).
+- **Scene quality:** brightness, glare share, sharpness (mean + worst).
+- **Per-frame timeline:** compact row per frame (t, stage ms, state), ~50–200 KB/session.
+- **Errors:** JS errors, WebGPU errors, device-mode fallbacks, with session time.
+- **"Report this" button:** marks the moment + short note; keeps that crop + last few seconds of rows.
+- **Problem crops:** the ~100 KB rectified crop only when corrected / tapped / >3 s to lock / reported.
+  No full frames.
+- **Retention:** like traces (90 d, oldest-first under the size cap); crops marked useful kept forever.
+- **Review:** owner page `/live/sessions` (list: phone, fps, time-split bar, outcomes; detail: cards + crops).
+- **Label queue:** on that page confirm the right card for corrected/failed crops → labelled set for the
+  gate and future gallery builds (never auto-added).
+Done when: a phone session shows up on /live/sessions with all of the above, tests green, reviewed, gate
+unchanged (no recognition change), deployed after owner OK.
+
 ## Update 2026-10-02 ~10:40 (owner decisions 09:15)
 - Live **d6f9330** on bundle **v18** (pokescanner session deployed v18 = 7b9a53c; this session added opt-in `?side2=1` + ORT allow_spinning=0, gate 0/132 changed, CPU/frame ~2.4x lower; `POKESCANNER_ORT_SPIN=1` reverts). denils 9d2b66b.
 - CT 140 RAM 3 -> 4 GB (live `pct set`, denils c6025f3).
