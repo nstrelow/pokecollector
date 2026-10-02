@@ -71,6 +71,24 @@ Deployed on CT 140: live TTA 4, GPU input path, cheaper crop encode, anonymous p
 (`POKESCANNER-TODO.md` item 7; pokescan `docs/PLAN-A-LOG.md` "on-device speed-ups").
 Phone retest pending.
 
+### Gallery v18 stack live 2026-10-02 ~09:50 Berlin (owner 09:05: "Deploy the v15+v16 live candidate → Deploy now, with stack")
+
+pokescan `live` 7b9a53c (branch `live-v18`) = live cdce949 + plan-a v16 (v15 ja promos S-P/SM-P/XY-P/BW-P,
+v16 their printed numbers) + promo-guard (an S/SM/XY/BW-P save with a `NNN/TTT` reading becomes a tap)
++ classic-num (a PMCG/neo save with a 3-digit/3-digit reading becomes a tap) + gallery v17 (CP6 20th
+Anniversary + S8a-P, 128 official rows) + gallery v18 (17 ja deck/starter/special products, +536 rows)
++ ecard-reader (italic vintage number fallback, bank `number_classical_v18e`). plan-a/master = 572f8d9
+(same stack, no app code). denils 592cc36; CT 140 mp0 → `/tank/pokescan/bundle-v18` (bundle sha
+af05805bdf15, 2.37 GB, 81,653 prints, `client/` towers byte-identical to v14).
+* Gate: server PASS, 132/132 frames identical to the stack branches and to v14/v16; 0 silent wrong;
+  negatives 0/134. Device (int8wo, live1, TTA 4): the v14 baseline's own failing rows; 1 frame
+  (en:me05-018) ambiguous rank 4 → 5, still in the 5-pick. Tests: node 165, serve + live 130, stack tests green.
+* Verified on CT 140: `/health` 7b9a53c / v18 / af05805bdf15, `/live` 200, manifest (bundle_version v18 →
+  device cache key moves to v18, one tower re-fetch per device), all four model files 200 with the same
+  names as v14 (Cloudflare copies stay valid; no static file changed since cdce949); identify: ja:CP6-001
+  ref → IDENTIFIED ja:CP6-001, ja:S-P-001 ref → IDENTIFIED ja:S-P-001, gate photo en:me05-018 → IDENTIFIED.
+* Rollback: `live` cdce949 + `/tank/pokescan/bundle-v14` (sha b7b8e8532325) — `POKESCANNER-OPS.md`.
+
 ### Gallery v13 + v14 live 2026-09-30 ~03:45 Berlin (owner: "Bring v13 + v14 into the live app tonight? → Yes")
 
 pokescan `live` 15d4869 = merge of plan-a 3ccc805 (v13 English Pokémon TCG Classic + guard; v14
