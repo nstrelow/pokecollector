@@ -69,11 +69,71 @@ State: pokescan `live` = ddb93b8 (bundle v14, speed-ups e03d629, owner-only lock
 - [ ] Cloudflare edge layer (deferred; see the section at the bottom): Access with Authentik as IdP, EU/EEA+UK+CH geo filter, bot filter. Needs a scoped token in /root/.config/cloudflare/token or owner clicks.
 - [ ] `/docs` and `/openapi.json` still open to LAN callers; lock or disable if wanted.
 - [ ] Price backlog: variant-aware headline, ja->en fallback, history.
-- [ ] Sideways two-view decision (TTA 4 loses 4 sideways auto-corrects; upright rows gain +1).
+- [ ] Sideways two-view decision: owner call, see "Sideways decision memo (2026-10-02)" below
+      (recommendation: option (b), only after its gate).
 - [ ] SSO instead of the browser bearer token in the page, then rotate the token.
 - [ ] Server RANSAC least-squares refinement.
 - [ ] v15 (+ Japanese part 2) deploy is owned by the `pokescanner` session; it pulls `live` first.
 - [ ] Public demo code is inert (publicUntil empty); delete it or keep for a future hardened demo.
+
+### Sideways decision memo (2026-10-02)
+
+**Question.** Sideways cards in live mode: embed one view (`live1`) or two? Desk analysis only. No new
+gate was run. Data: pokescan `data/exp/results/gate_cascade_p2.json` (geo2_axis, int8wo, TTA 8) and
+`gate_cascade_p2_live1_tta{8,4}.json`, joined per row. Rows are classed by geo2's rotation set.
+Method: join `per_frame` on `frame`; auto = identified and the print is right.
+
+**1. Sideways rows.** 64 of the 132 rows are sideways (pair {1,3}). 64 are upright and 4 are axis-unsure (all four rotations).
+Counts are top-1 / auto-correct / silent wrong, with n = 64 per class:
+
+| config | sideways | upright | all 132 |
+|---|---|---|---|
+| live1, TTA 8 | 36 / 30 / 0 | 62 / 54 / 0 | 100 / 85 / 0 |
+| live1, TTA 4 (shipped) | 32 / 25 / 0 | 63 / 55 / 0 | 97 / 81 / 0 |
+| geo2_axis (two views), TTA 8 | **64 / 57 / 0** | 62 / 54 / 0 | 130 / 113 / 0 |
+
+- The live1 losses are the coin flip. It chose rotation 1 on 57 of 64 rows (right on 26) and rotation 3 on 7 (right on 6).
+- Every miss is AMBIGUOUS or the picker (33 ambiguous, 5 confirm_language, 1 flag). None is silent.
+- Caution: the best wrong-rotation score is 0.804, which is above the 0.76 score floor. Only the margin and
+  the guards kept those rows from firing. On upright rows the extra flip view adds nothing: 54 = 54, one
+  row gained and one lost.
+- Caveat: these 64 rows are landscape *photos* of cards lying across the frame, not portrait live frames.
+  How often live frames show a sideways card is unmeasured.
+
+**2. Phone cost.** The tower runs about 240–260 ms at batch 1, and batch 2 takes about 2x, so roughly +250 ms of GPU per two-view
+tower frame. The worker is at ~600 ms/frame, so a two-view frame drops from about 2.9 fps to about 2 fps on those frames only. The tower skip
+(`cad85f9`/`3d2c382`) means the tower runs only before lock. That covers about 3 agreeing votes, then 1 vote/s while a card stays unfireable, plus 2 s refreshes.
+After lock nothing changes. Expect about +0.5–0.8 s to the first fire on affected cards and zero cost once locked.
+
+**3. Options.** Estimates for (b)–(d) splice geo2 TTA 8 rows into live1 rows, so they are not measured at TTA 4.
+
+| option | accuracy (auto, 132) | fps / latency | silent-wrong risk |
+|---|---|---|---|
+| (a) keep live1 | 81. Sideways ~coin flip (25/64) | none | 0/132; wrong-rotation scores reach 0.80 |
+| (b) +2nd view when the quad's long axis is horizontal | ~114. Upright unchanged, sideways ~57 | sideways cards only: ~2 fps before lock | lowest: per frame it is geo2_axis, the most-gated config. No flips |
+| (c) 2nd view when the 1st is not fireable | ~114–120 (the upper figure mixes TTAs) | extra sequential tower run on ~51/132 frames, upright included; stuck/unknown cards pay 2x at 1/s | adds the 180° flip on upright cards (owner: no flips). A wrong 1st view that fires is never re-checked |
+| (b+c) sideways AND unfireable | ~116 | fewer 2nd runs (~42) but sequential, ~same ms as batch 2 on those | as (c), without flips |
+| (d) always two views | 113 (= geo2_axis) | every new card ~2 fps before lock, +~0.75 s to fire | low, but it adds flips the owner rejected, for 0 upright gain |
+
+**4. Recommendation: (b).**
+- (b) recovers all 64 sideways rows' top-1 (25 -> ~57 auto) for no upright cost and no flips. A card held across
+  the phone has no "up", so this is not a flip.
+- It reuses the geo2_axis pair logic and the 1.274 axis guard; JS `selectRotations` (p2/geometry.js) already has both modes.
+- (b+c) saves a little GPU but adds an order effect: a wrong-rotation first view could fire. Do not take that risk to save ~250 ms.
+- If the owner does not expect sideways live use, (a) is fine as it is (0 silent wrong). In that case add a drawer counter
+  "sideways quads seen" to find out.
+
+**Gate before shipping (b).**
+- Device gate `gate_cascade.py --bundle bundle-p2-v16 --tta 4 --rotation-mode <live1+axis>`. Pass conditions:
+  - upright rows identical to `gate_cascade_p2_live16_tta4.json`;
+  - sideways auto ≥ 55;
+  - 0 silent wrong, 0 false accepts;
+  - hold-out masked silent wrong ≤ 4.
+- Run a geo2_axis TTA 4 row first, because none exists yet.
+- Python/JS parity of the new rotation choice on the test quads, including tilted portrait-held quads near the 1.274 guard.
+- Phone: measure batch-2 tower ms (real 2x?), first-sideways-card shader compile, and `?gc=1` graph capture with
+  a second input shape.
+- 10–20 real portrait live frames of cards held across the phone.
 
 ## On-device speed (P2 live mode)
 
