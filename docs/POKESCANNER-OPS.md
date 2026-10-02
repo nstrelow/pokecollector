@@ -273,6 +273,32 @@ Cloudflare trap) and a real /identify. If `live` moved past 33fa456 first, merge
 re-run the tests before deploying. **Rollback:** `checkout 33fa456`, mp0 → `/tank/pokescan/bundle-v18`,
 denils `commit = "33fa456"`, update + restart; health = 33fa456 (tree of d6f9330) / v18 / af05805bdf15.
 
+**Candidate: v22** (not deployed; owner decides). pokescan branch `live-v22` b07fabc = live 7045960 (v20)
+fast-forwarded through `dp-v21` (gallery v21: 519 second references, scans next to the 162 px DP6 / Pt1-4
+images) and `dp-v22` (gallery v22: 45 more DP-era Japanese cards from the final pokeassets table, picker-only;
+`hints_v22.json` = 90 hints, supersedes hints_v20). Bundle `/tank/pokescan/bundle-v22`, sha 3d0eb299dc48,
+82,971 prints; client towers byte-identical to v20. Server gate 132/132 identical to v20/v21, negatives 0/134,
+device gate unchanged; full suite, test_serve_live 80/80 and node 170/170 green. Wild: v21 lifts the pre-selected
+DP6/Pt card agreeing with the title 208 -> 357 of 559; v22 2 saves -> taps; 0 new contradictions in either.
+Deploy (Proxmox host), the v20 pattern:
+```
+cd /root/denils && git pull
+git -C /tank/pokescan/src fetch origin && git -C /tank/pokescan/src checkout b07fabc
+git -C /srv/repos/pokescan-wt-dpv22 push origin live-v22:live      # ff from 7045960 only, never force
+# also ff master / plan-a to b07fabc
+pct set 140 -mp0 /tank/pokescan/bundle-v22,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140
+# denils: commit = "b07fabc" in modules/aspects/features/pokescan-serve.nix and bundle-v22 in its
+# comment + modules/aspects/hosts/pokescanner.nix (pct set line + bundle comment; rollback bundle-v20);
+# commit, push, nix run .#update-pokescanner, then:
+ssh root@10.0.1.40 systemctl restart pokescanner
+curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}'   # b07fabc / v22 / 3d0eb299dc48
+```
+Check /live (200), `/live/models/manifest.json` (tower file names unchanged, cache key follows the bundle
+version, no Cloudflare trap) and a real /identify (a DP-era card -> AMBIGUOUS with the DP-era print in the
+picker). If `live` moved past 7045960 first, merge it into live-v22 and re-run the tests. **Rollback:**
+`checkout 7045960`, mp0 -> `/tank/pokescan/bundle-v20`, denils `commit = "7045960"`, update + restart;
+health = 7045960 / v20 / 60f0cc5fc797.
+
 **Change SSO scope** (which paths need login): edit the `ForwardAuth` flag on the
 `scan.nilss.dev` handles in `/conf/config.xml` (script pattern: python + `ET`, never sed on
 OPNsense's csh), then the two `configctl` commands. `/outpost.goauthentik.io/*` must stay
