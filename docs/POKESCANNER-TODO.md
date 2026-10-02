@@ -3,6 +3,43 @@
 Open work on the scanner, newest first. State lives in `docs/status.md`; this file is the
 backlog. Each item says why, what to measure first, and when it is done.
 
+## Overnight plan 2026-10-02 (autonomous run 03:10 -> ~09:00, owner-scheduled)
+
+Start state: live ddb93b8 on CT 140 (bundle v14, owner-only lockdown), uptime 42 h, no warnings.
+Phone retest (home wifi): 2.9 fps / 786 ms; GPU-bound: tower run 240-260 ms + localize lock wait 93-149 ms.
+
+Priorities (reasoned):
+1. **Skip the tower while a card is LOCKED and while the quad has not moved** (P2 device mode).
+   GPU-bound now, so the only real win is doing less GPU work. Locked = result already shown; only the
+   localizer is needed to notice removal. Unmoved = same card, same pose. A new/removed card still
+   triggers recognition, so accuracy is unchanged (gate still run). Expect: locked frames ~80-180 ms,
+   cooler phone, battery. Also stop /identify uploads while locked (also helps 5G + rate limits).
+2. **Cheaper grab** (39-71 ms page side): two willReadFrequently canvas copies per frame.
+3. **Lock /docs, /openapi.json, /redoc** to trusted callers (same rule as /health detail).
+4. **ORT WebGPU graph capture for the tower** behind an opt-in flag (`?gc=1`), default off: it cannot be
+   verified on the real phone tonight; headless Chromium only. Owner tries it in the morning.
+5. **Price backlog**: variant-aware headline (holo/reverse/1st ed. where TCGdex has them), ja->en
+   fallback for unpriced ja cards (clearly labelled as the EN print's price).
+6. **Branch consolidation** of pokescan + pokecollector (coordinated with the `pokescanner` session).
+7. One deploy at the end, outside curl check (all paths 302), report.
+
+Not tonight (needs the owner): sideways two-view decision, allow_spinning=0, +1 GB RAM, token rotation,
+Cloudflare, GitHub repo option.
+
+### DP-era (2006-2011) JP hunt findings (pokeasset worker, read-only check 2026-10-02 03:15)
+- Gap: pokemon-card.com's DP/Platinum-era cards (2006-2011) were mostly missing/low-res; 555 ids now
+  parse, ~40 set codes have no upstream (TCGdex) set file at all.
+- Bulk scrape finished for 2 of 3 sources: papermoon 2,120 images -> **1,423 distinct ids verdict
+  `scan`**, pokumon 262 -> 194 ids `scan`; tcgplayer-jp blocked by 403 after 81 (74 `scan`) — resume
+  later at its 10 s crawl delay, never faster. Plus 107 official CD renders (Arceus check passed).
+- For the scanner: these are candidate **ja reference images for DP-era prints** the gallery lacks or
+  has only small art for -> better recall on old JP cards. Owner decisions still open in
+  pokeassets `TODO-dp-era-hunt-2026-09-30.md` (TCGplayer/pokumon/Paper Moon permission, CD renders,
+  EN twins as picker-only proxies). Local scanner use only; never redistribute.
+- [ ] Task (pokescanner session, after owner OK): map `dphunt-match.jsonl` (verdict=scan) -> print_ids,
+      pick best per id (CD render > tcgplayer > papermoon > pokumon), build into a gallery version,
+      gate as usual.
+
 ## Open tasks checklist (2026-09-30)
 
 State: pokescan `live` = ddb93b8 (bundle v14, speed-ups e03d629, owner-only lockdown), denils e8ca056.
