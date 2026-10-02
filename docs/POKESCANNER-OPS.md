@@ -252,6 +252,27 @@ curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}
 ```
 The next gallery gets its own `bundle-vN` beside these; the same steps with its sha deploy it.
 
+**Candidate: v20** (not deployed; owner decides). pokescan branch `live-v20` 7045960 = live 33fa456
+(v18 + opt-in side2 + ORT spin off) + `dp-era` (gallery v19 promos + v20 DP-era Japanese, 1,199 rows,
+picker-only, tap-only) + `classic-strip` (Classic outlined number fallback, bank v18f). Bundle
+`/tank/pokescan/bundle-v20`, sha 60f0cc5fc797, 82,926 prints; client towers byte-identical to v18.
+Server gate 132/132 identical to v18, negatives 0/134, device gate identical to v18's baseline; tests green.
+Deploy (Proxmox host):
+```
+cd /root/denils && git pull
+git -C /tank/pokescan/src fetch origin && git -C /tank/pokescan/src checkout 7045960   # or `live` after ff
+git -C /srv/repos/pokescan-wt-live20 push origin live-v20:live                       # ff only, never force
+pct set 140 -mp0 /tank/pokescan/bundle-v20,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140
+# denils: commit = "7045960" in modules/aspects/features/pokescan-serve.nix (+ bundle-v20 comment in
+# hosts/pokescanner.nix), commit, push, nix run .#update-pokescanner, then:
+ssh root@10.0.1.40 systemctl restart pokescanner
+curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}'   # 7045960 / v20 / 60f0cc5fc797
+```
+Check /live, the model manifest (cache key `pokescan-models-v20`; tower file names unchanged, so no
+Cloudflare trap) and a real /identify. If `live` moved past 33fa456 first, merge it into live-v20 and
+re-run the tests before deploying. **Rollback:** `checkout 33fa456`, mp0 → `/tank/pokescan/bundle-v18`,
+denils `commit = "33fa456"`, update + restart; health = 33fa456 (tree of d6f9330) / v18 / af05805bdf15.
+
 **Change SSO scope** (which paths need login): edit the `ForwardAuth` flag on the
 `scan.nilss.dev` handles in `/conf/config.xml` (script pattern: python + `ET`, never sed on
 OPNsense's csh), then the two `configctl` commands. `/outpost.goauthentik.io/*` must stay
