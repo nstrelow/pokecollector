@@ -355,7 +355,7 @@ curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}
 **Rollback:** `checkout d43e4cc`, mp0 -> `/tank/pokescan/bundle-v22`, denils `commit = "d43e4cc"`, update + restart;
 health = d43e4cc / v22 / 3d0eb299dc48. Owner review of the session log: `/live/sessions`.
 
-**v24.1 — DEPLOYED 2026-10-04 ~01:39 UTC** as `2adb928` (`live-hints-sso` = `live-hints` 99136fb + `live-sso`
+**v24.1 — DEPLOYED 2026-10-04 01:39 Berlin (2026-10-03 23:39 UTC)** as `2adb928` (`live-hints-sso` = `live-hints` 99136fb + `live-sso`
 2c3334f on master; owner yes 2026-10-03, PicaLens #4). Code-only plus hint pictures, no denils / Authentik / OPNsense
 change. Gate 132/132 identical to v24 (T11 p50 776 ms), negatives 0/134, device 0/132 state changes, hints gate PASS.
 ```
