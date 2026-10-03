@@ -202,8 +202,8 @@ is handled separately.
    swap the creds in the secret when done testing).
 
 **Pitfalls hit (so nobody hits them twice)**
-- pokescan main checkout `/srv/repos/PicaLens/scanner/pokescan` is stale; v12 assets live only in
-  `scanner/worktrees/r2/data`. The serve/live worktrees symlink into it.
+- (fixed 2026-10-03) lane assets used to live only in worktrees (v12 in `worktrees/r2/data`); since the
+  2026-10-03 consolidation every versioned artifact is in `scanner/pokescan/data` and `r2` is removed.
 - `models/segdata.py` imported torch on the inference path → the CT (no torch) crash-looped;
   fixed by `models/letterbox.py`. Test with `sys.modules['torch']=None`.
 - A NixOS switch that changes both the agenix secret and the unit can restart the service on
