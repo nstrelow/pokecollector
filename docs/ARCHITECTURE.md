@@ -2,6 +2,13 @@
 
 This document reflects the current code layout at the repository root.
 
+## This fork (branch `pokescanner`)
+
+- Adds the `external` matcher provider (`backend/services/external_matcher.py`): it calls the pokescan service over HTTP and needs no prompt, no per-user API key and no capability test.
+- With `EXTERNAL_MATCHER_URL` set it is listed first and is the default for users who never chose a provider; users with a saved Gemini/OpenAI choice keep theirs.
+- Details: `docs/scanner-providers.md` ("External card matcher"). Deploy and rollback: `docs/POKESCANNER-OPS.md`.
+- "pHash" in this document is upstream's verification step (Scanner Flow, step 5). The abandoned local pHash scanner (branch `local-image-matching`) is a different thing.
+
 ## Stack
 
 | Layer | Technology | Port |

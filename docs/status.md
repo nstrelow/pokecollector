@@ -19,7 +19,8 @@ The sections below are dated snapshots (newest first) kept as history.
 
 **P1 is built and the scanner service is live on CT 140.** What is NOT done is the one
 step the permission system blocked: deploying this branch to the live pokecollector on
-CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
+CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work. (historical; superseded by
+"Deployed 2026-09-29 09:15–09:30" below: CT 100 deploy and Caddy/Authentik done)
 
 ### Working now
 
@@ -39,7 +40,7 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
 - **pokecollector branch `pokescanner`** (this repo, `fork/pokescanner` d9600cf + this
   commit): backend `external` provider + frontend debug panel + settings block + en/de
   session toggle + live link; verified (1018 backend / 337 frontend tests, security pass,
-  Docker build arg). Not deployed.
+  Docker build arg). Not deployed (historical; deployed 2026-09-29 09:15, below).
 
 ### Deployed 2026-09-29 09:15–09:30 (owner said "deploy it yourself")
 
@@ -57,9 +58,10 @@ CT 100 (recipe below, owner runs it), plus the proxy/Authentik GUI work.
   `/live*` and `/collection/*` → 10.0.1.40:8000 with ForwardAuth, catch-all → 10.0.1.40:8000
   (bearer). Verified: `/health` 200, `/live` 302 → Authentik, `/outpost.goauthentik.io/ping` 204.
 
-### Public demo 2026-09-29 20:25 → 2026-10-06 18:30 UTC (owner: "yes allow access to scan.nilss.dev")
+### Public demo 2026-09-29 20:25 → planned 2026-10-06 18:30 UTC, ENDED EARLY 2026-09-29 23:29 Berlin (denils 195ef60) (owner: "yes allow access to scan.nilss.dev")
 
-**https://scan.nilss.dev/live is open to anyone until `2026-10-06T18:30:00Z` (20:30 Berlin).**
+(historical: `publicUntil = ""` ended it early; owner-only lockdown since 2026-09-30)
+**https://scan.nilss.dev/live was planned to be open to anyone until `2026-10-06T18:30:00Z` (20:30 Berlin).**
 pokescan `45ae3b4` (deployed as `f613790` incl. the load UI), denils `f71680f`
 (`publicUntil` in `pokescan-serve.nix` → `POKESCANNER_PUBLIC_UNTIL`), OPNsense Caddy:
 forward-auth OFF on `/live*` only (backup `/conf/config.xml.bak-pokescan-public-20260929-202218`).
@@ -76,7 +78,7 @@ back on `/live*`.
 
 Code deployed on CT 140 (denils label `3c4df5e`); bundle `/tank/pokescan/bundle-v12p3` built
 (fp16/fp32/int8wo towers) but NOT mounted yet — see `POKESCANNER-TODO.md` item 2 for the
-`pct set` command. Rollback: mp0 back to `bundle-v12p2`.
+`pct set` command. Rollback: mp0 back to `bundle-v12p2` (historical; current rollback: d43e4cc + bundle-v22).
 
 ### Device speed 2026-09-29 (pokescan `e03d629`, denils `cbdbf3c`)
 
@@ -100,7 +102,7 @@ af05805bdf15, 2.37 GB, 81,653 prints, `client/` towers byte-identical to v14).
   device cache key moves to v18, one tower re-fetch per device), all four model files 200 with the same
   names as v14 (Cloudflare copies stay valid; no static file changed since cdce949); identify: ja:CP6-001
   ref → IDENTIFIED ja:CP6-001, ja:S-P-001 ref → IDENTIFIED ja:S-P-001, gate photo en:me05-018 → IDENTIFIED.
-* Rollback: `live` cdce949 + `/tank/pokescan/bundle-v14` (sha b7b8e8532325) — `POKESCANNER-OPS.md`.
+* Rollback: `live` cdce949 + `/tank/pokescan/bundle-v14` (sha b7b8e8532325) — `POKESCANNER-OPS.md` (historical; current rollback: d43e4cc + bundle-v22).
 
 ### Gallery v13 + v14 live 2026-09-30 ~03:45 Berlin (owner: "Bring v13 + v14 into the live app tonight? → Yes")
 
@@ -108,7 +110,7 @@ pokescan `live` 15d4869 = merge of plan-a 3ccc805 (v13 English Pokémon TCG Clas
 fr/it/pt/es TCG Live refs for SV/ME as a language *veto*, twin split by identity, hold-out mask
 by identity) + test/doc commits; denils 6ad3ab7; CT 140 mp0 → `/tank/pokescan/bundle-v14`
 (bundle sha b7b8e8532325, 2.33 GB, `client/` towers unchanged). `bundle-v12p3` untouched =
-rollback (`POKESCANNER-OPS.md` "Roll back the v14 deploy").
+rollback (`POKESCANNER-OPS.md` "Roll back the v14 deploy"; historical, current rollback: d43e4cc + bundle-v22).
 * Gate on the merged code: server path PASS, 132/132 frames identical to v12 and v14
   references; device path (int8wo, live1, TTA 4) 0/132 frames changed vs the accepted
   `gate_cascade_p2_live1_tta4.json`, hold-out + out-of-domain identical. 0 new silent wrong,
@@ -179,8 +181,9 @@ is handled separately.
    Planned fix (needs owner approval, it changes auth): trusted-proxy mode — Caddy puts
    `/identify` behind Authentik too, the service accepts `X-Authentik-Username` *instead of* the
    bearer only from OPNsense's IP. Handing the bearer to SSO browsers was tried and rejected.
-2. **Never tested on a real phone.** Only headless Chromium with a faked camera. Unknowns: iOS
-   Safari camera permission + `toBlob` speed, haptics, swipe drawer, PWA/HTTPS quirks.
+2. ~~Never tested on a real phone~~ tested on the owner's phone 2026-09-29 (owner feedback in Next steps
+   item 7). Still open: scan 3 cards on the phone (a DP-era, a CP6 and an English card) to confirm
+   v20–v24 on the live app (`/srv/repos/PicaLens/HANDOFF.md`).
 3. **Engine, not plumbing:** one wild Lugia-ex photo got a wrong confident-looking top-1
    (Sadaija VMAX) with a loose outline; ~1.3–2 s/frame under host load; consensus needs 3
    agreeing frames ≈ 4–6 s per card at that rate. A quiet host should roughly halve it.
@@ -227,7 +230,8 @@ is handled separately.
 2. Real-phone session: scan 20 PRE / full-art cards on `scan.nilss.dev/live` and on the queue
    page; note fps, misfires, wrong cards, UX papercuts here. This decides everything below.
 3. Trusted-proxy auth (removes the token box) — owner approval needed.
-4. ~~Trace retention~~ done 09-29 (90 d / 10 GB). Still open: a Gatus/Beszel disk alert for CT 140.
+4. ~~Trace retention~~ done 09-29 (90 d / 10 GB). ~~Disk alert for CT 140~~ done 09-29: Gatus "Pokescanner disk"
+   ntfy alert < 15 % free (denils 34b3150, item 7).
 5. **Latency (2026-09-29, done, `docs/POKESCANNER-LATENCY.md` Results)**: lane 1 → CT 140 has
    8 cores (PVE `cores` is a cpuset; 4 meant 2 physical P-cores), threads stay 4, ~25–35 % faster
    retrieve; lane 3 → live 948cfda: early fire on 2 strong frames (score ≥ 0.85, margin ≥ 0.08),
