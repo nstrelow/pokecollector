@@ -2,16 +2,21 @@
 
 Read this first. Plan: `docs/POKESCANNER-PLAN.md`. Ops/runbook: `docs/POKESCANNER-OPS.md`. Latency plan: `docs/POKESCANNER-LATENCY.md`. P2 plan + pickup prompt: `docs/POKESCANNER-P2.md`. Backlog: `docs/POKESCANNER-TODO.md`. Workflow: `docs/agent-workflow.md`.
 
-## Live now (2026-10-03)
+## Live now (2026-10-04)
 
-- **Scanner service:** pokescan `9d26328` (session log v2 on v24 `d43e4cc`; gallery stays v22) on CT 140
-  `10.0.1.40:8000` (scan.nilss.dev), bundle `/tank/pokescan/bundle-v23` (mp0), source `/tank/pokescan/src` (mp1),
-  denils `b65ced3`. `POKESCANNER_LIVE_ISOLATED=1` (threaded Wasm) is on.
-- **Rollback:** `d43e4cc` + `/tank/pokescan/bundle-v22` (recipe: `docs/POKESCANNER-OPS.md`, "Common operations").
-- **Trunk:** pokescan `master` = `live` = `plan-a`; lanes merge into master, never force-pushed.
+- **Scanner service:** pokescan `2adb928` = release v24.1 (v24 + `/live` "similar card" hints + the page signs in
+  by the owner's Authentik session, no browser bearer; recognition identical to v24) on CT 140 `10.0.1.40:8000`
+  (scan.nilss.dev), bundle `/tank/pokescan/bundle-v23` (mp0) with the hint pictures in `bundle-v23/hints_v22/`,
+  source `/tank/pokescan/src` (mp1), denils `b65ced3` (unchanged). `POKESCANNER_LIVE_ISOLATED=1` (threaded Wasm) is on.
+- **Rollback:** `9d26328` + bundle-v23 as is (recipe: `docs/POKESCANNER-OPS.md`, "Common operations").
+- **Trunk:** pokescan `master` (2adb928); `live` / `plan-a` still at `9773e75` until the owner fast-forwards them;
+  lanes merge into master, never force-pushed.
 - **Repos:** everything lives under `/srv/repos/PicaLens` since 2026-10-03 (`scanner/pokescan`, `scanner/worktrees/<lane>`,
   `collection/pokecollector`, …; cross-repo state in `/srv/repos/PicaLens/HANDOFF.md`).
-- **Health:** `curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}'` → `9d26328 / v22 / 84df050d5e36`.
+- **Health:** `curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256,similar_hints}'` →
+  `9d26328 / v22 / 84df050d5e36 / 90` (`commit` is the denils label, not bumped this time; `similar_hints` shows the
+  v24.1 code).
+- pokecollector's backend keeps using the bearer over the LAN (unchanged).
 
 The sections below are dated snapshots (newest first) kept as history.
 

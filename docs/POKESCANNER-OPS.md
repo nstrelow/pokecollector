@@ -8,7 +8,7 @@ design in `docs/POKESCANNER-PLAN.md`.
 | Piece | Where | How it's managed | Repo |
 |---|---|---|---|
 | pokescanner service (`pokescan.serve`) | CT 140 `pokescanner`, 10.0.1.40:8000, NixOS, 8 cores / 3 GB (cores 4 -> 8 on 2026-09-29, ORT threads stay 4) | denils (`modules/aspects/features/pokescan-serve.nix`, `hosts/pokescanner.nix`), `nix run .#update-pokescanner` | `/root/denils` |
-| pokescan source the service runs | `/tank/pokescan/src` (git checkout of the trunk `master` = `live` = `plan-a`; **9d26328 since 2026-10-02**), bind-mounted ro at `/var/lib/pokescanner/src` (mp1) | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
+| pokescan source the service runs | `/tank/pokescan/src` (git checkout of the trunk `master`; **2adb928 since 2026-10-04**), bind-mounted ro at `/var/lib/pokescanner/src` (mp1) | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
 | model bundle v12 | `/tank/pokescan/bundle-v12` (1.6 GB incl. `ref_thumbs_v12/`), ro at `/var/lib/pokescanner/bundle` | rebuilt with `scripts/export_serve_bundle.py --out <newdir>` from a pokescan worktree; new versions get a NEW dir, then change `bundleDir` in the nix file | pokescan |
 | model bundle v12p3 (historical) | `/tank/pokescan/bundle-v12p3` (1.98 GB: v12 + `client/` towers fp16 172.9 MB / fp32 345.1 MB / int8wo 87.8 MB + unet 0.6 MB; bundle sha 0fac0cf6b1b1) | CT 140 mp0 2026-09-29 evening → 2026-09-30, then the v14 rollback bundle (historical; current rollback: d43e4cc + bundle-v22); the page picks the tower per device (WebGPU+shader-f16 → fp16, WebGPU → fp32, else int8wo). Its rollback then was mp0 → bundle-v12p2 (+ `pct reboot 140`) | pokescan |
 | model bundle v14 (historical) | `/tank/pokescan/bundle-v14` (2.33 GB: gallery v14 = 79,421 prints incl. English Classic + fr/it/pt/es SV/ME refs, `names_v14.json`, `ref_thumbs_v14/` 79,397, `client/` towers byte-identical to v12p3; bundle sha b7b8e8532325) | CT 140 mp0 2026-09-30 → 2026-10-02 ~09:50, code pokescan `live` 15d4869 (denils 6ad3ab7); replaced by v18/v20/v22/v23 (see the deploy blocks below) | pokescan |
@@ -55,9 +55,9 @@ design in `docs/POKESCANNER-PLAN.md`.
 - pokecollector's backend calls `http://10.0.1.40:8000` over the LAN with the token
   (`EXTERNAL_MATCHER_TOKEN` in its `.env`), so Caddy doesn't affect it. Gatus uses
   `http://10.0.1.40:8000/health` over the LAN and still gets the full body, `disk` included.
-- The live page still needs the bearer in the browser for `/identify` and `/price` (`?token=`
-  once, stored in localStorage). `/health`, `/ref` and the model files come through on the
-  SSO session.
+- Since v24.1 (2026-10-04) the live page needs no bearer: the SSO session covers `/identify` and `/price`
+  too (see the v24.1 block below); a token kept in localStorage is removed. Before that the page needed
+  the bearer (`?token=` once, stored in localStorage).
 
 ## Owner-only lockdown (2026-09-30)
 
@@ -170,7 +170,13 @@ Cloudflare fronts scan.nilss.dev and ignored `no-cache` on the live page's `.js`
 
 ## Common operations
 
-**Current rollback (2026-10-03):** `git -C /tank/pokescan/src checkout d43e4cc`, mp0 → `/tank/pokescan/bundle-v22`, denils `commit = "d43e4cc"` + bundle comment, `nix run .#update-pokescanner`, `systemctl restart pokescanner`; health = d43e4cc / v22 / 3d0eb299dc48.
+**Current rollback (2026-10-04, from v24.1 `2adb928`):** `git -C /tank/pokescan/src checkout 9d26328`, then
+`ssh root@10.0.1.40 systemctl restart pokescanner`; bundle-v23 stays (its `hints_v22/` is ignored by 9d26328), no denils
+change. Check: full `/health` has no `similar_hints` / `auth_via` keys. The phone needs the bearer again
+(`/live?token=…`). One step further back: `checkout d43e4cc`, mp0 → `/tank/pokescan/bundle-v22`, denils `commit = "d43e4cc"`
++ bundle comment, `nix run .#update-pokescanner`, `systemctl restart pokescanner`; health = d43e4cc / v22 / 3d0eb299dc48.
+Note: `/tank/pokescan/src`'s `origin` remote still names the pre-move path `/srv/repos/pokescan`; fetch with
+`git -C /tank/pokescan/src fetch /srv/repos/PicaLens/scanner/pokescan master` (or fix the remote URL).
 
 **Before any deploy:** the release has a row + section in pokescan `docs/CHANGELOG.md` (fill its "deployed" column with the commit and date after the deploy) and `docs/ASSETS.md` is regenerated (`scripts/assets_report.py`); pokescan `tests/test_changelog.py` enforces both.
 
@@ -348,6 +354,23 @@ curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}
 ```
 **Rollback:** `checkout d43e4cc`, mp0 -> `/tank/pokescan/bundle-v22`, denils `commit = "d43e4cc"`, update + restart;
 health = d43e4cc / v22 / 3d0eb299dc48. Owner review of the session log: `/live/sessions`.
+
+**v24.1 — DEPLOYED 2026-10-04 ~01:39 UTC** as `2adb928` (`live-hints-sso` = `live-hints` 99136fb + `live-sso`
+2c3334f on master; owner yes 2026-10-03, PicaLens #4). Code-only plus hint pictures, no denils / Authentik / OPNsense
+change. Gate 132/132 identical to v24 (T11 p50 776 ms), negatives 0/134, device 0/132 state changes, hints gate PASS.
+```
+cp -a /tank/pokescan/hints-v22-thumbs /tank/pokescan/bundle-v23/hints_v22      # 31 WebP + hints_v22_manifest.json
+git -C /tank/pokescan/src fetch /srv/repos/PicaLens/scanner/pokescan master && git -C /tank/pokescan/src checkout 2adb928
+ssh root@10.0.1.40 systemctl restart pokescanner
+curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_sha256,similar_hints,auth_via}'   # 9d26328 (label) / 84df050d5e36 / 90 / "lan"
+```
+Auth after v24.1: the `/live` page needs no bearer behind Caddy + Authentik. The service treats a request from Caddy
+(10.0.0.1) carrying `X-Authentik-Username` in `POKESCANNER_SSO_USERS` as the owner on the owner routes too
+(`/identify`, `/price`, `/bundle`, `/trace`, `/collection/add`, `/live/loadlog`, `/public/stats`); an SSO POST must
+carry `Origin: https://scan.nilss.dev` (`POKESCANNER_SSO_ORIGINS`), else 403. A direct LAN peer still needs the bearer
+on those routes (pokecollector, scripts). uvicorn's proxy headers are off. `/hint/*` has `/ref`'s auth. Smoke test
+(2026-10-04, from 10.0.0.1): with the header `auth_via: "sso"`, identify 200 / cross-origin 403; without it or as another
+user 401. Public without a cookie: every path 302 to auth.nilss.dev.
 
 **Change SSO scope** (which paths need login): edit the `ForwardAuth` flag on the
 `scan.nilss.dev` handles in `/conf/config.xml` (script pattern: python + `ET`, never sed on
