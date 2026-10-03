@@ -172,6 +172,8 @@ Cloudflare fronts scan.nilss.dev and ignored `no-cache` on the live page's `.js`
 
 **Current rollback (2026-10-03):** `git -C /tank/pokescan/src checkout d43e4cc`, mp0 → `/tank/pokescan/bundle-v22`, denils `commit = "d43e4cc"` + bundle comment, `nix run .#update-pokescanner`, `systemctl restart pokescanner`; health = d43e4cc / v22 / 3d0eb299dc48.
 
+**Before any deploy:** the release has a row + section in pokescan `docs/CHANGELOG.md` (fill its "deployed" column with the commit and date after the deploy) and `docs/ASSETS.md` is regenerated (`scripts/assets_report.py`); pokescan `tests/test_changelog.py` enforces both.
+
 **Update the service code** (pokescan trunk `master` = `live` = `plan-a`):
 ```
 git -C /tank/pokescan/src fetch origin && git -C /tank/pokescan/src checkout <rev>
