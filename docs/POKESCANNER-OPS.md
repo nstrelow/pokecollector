@@ -12,7 +12,7 @@ design in `docs/POKESCANNER-PLAN.md`.
 | model bundle v12 | `/tank/pokescan/bundle-v12` (1.6 GB incl. `ref_thumbs_v12/`), ro at `/var/lib/pokescanner/bundle` | rebuilt with `scripts/export_serve_bundle.py --out <newdir>` from a pokescan worktree; new versions get a NEW dir, then change `bundleDir` in the nix file | pokescan |
 | model bundle v12p3 (historical) | `/tank/pokescan/bundle-v12p3` (1.98 GB: v12 + `client/` towers fp16 172.9 MB / fp32 345.1 MB / int8wo 87.8 MB + unet 0.6 MB; bundle sha 0fac0cf6b1b1) | CT 140 mp0 2026-09-29 evening → 2026-09-30, then the v14 rollback bundle (historical; current rollback: d43e4cc + bundle-v22); the page picks the tower per device (WebGPU+shader-f16 → fp16, WebGPU → fp32, else int8wo). Its rollback then was mp0 → bundle-v12p2 (+ `pct reboot 140`) | pokescan |
 | model bundle v14 (historical) | `/tank/pokescan/bundle-v14` (2.33 GB: gallery v14 = 79,421 prints incl. English Classic + fr/it/pt/es SV/ME refs, `names_v14.json`, `ref_thumbs_v14/` 79,397, `client/` towers byte-identical to v12p3; bundle sha b7b8e8532325) | CT 140 mp0 2026-09-30 → 2026-10-02 ~09:50, code pokescan `live` 15d4869 (denils 6ad3ab7); replaced by v18/v20/v22/v23 (see the deploy blocks below) | pokescan |
-| **model bundle v24 (current)** | `/tank/pokescan/bundle-v24` (gallery v22 + bank v22g_jar5b + twins v24 + `supported_sets_v22_picker.json`, sidecar `identity_prints_v22_picker.json`, `hints_v22/`; sha 161c5780d77a; client towers byte-identical to v23) | CT 140 **mp0 since 2026-10-04 12:51 Berlin**, code pokescan 78dc0f0 (v24.2; denils b65ced3 unchanged). Health = 9d26328 (label) / v22 / 161c5780d77a | pokescan |
+| **model bundle v24 (current)** | `/tank/pokescan/bundle-v24` (gallery v22 + bank v22g_jar5b + twins v24 + `supported_sets_v22_picker.json`, sidecar `identity_prints_v22_picker.json`, `hints_v22/`; sha 161c5780d77a; client towers byte-identical to v23) | CT 140 **mp0 since 2026-10-04 12:51 Berlin**, code pokescan 78dc0f0 (v24.2; denils 5305914). Health = 78dc0f0 / v22 / 161c5780d77a | pokescan |
 | model bundle v23 (rollback) | `/tank/pokescan/bundle-v23` (gallery v22 + bank v22g + twins v24, sha 84df050d5e36, + `hints_v22/`) | CT 140 mp0 2026-10-02 → 2026-10-04 (v23, v24, v24.1); rollback for v24.2: mp0 → bundle-v23 + `checkout 2adb928` + `pct reboot 140` | pokescan |
 | model bundle v22 (rollback) | `/tank/pokescan/bundle-v22` (sha 3d0eb299dc48) | kept for rollback: `checkout d43e4cc`, mp0 → bundle-v22, denils `commit = "d43e4cc"` (see "Current rollback" below) | pokescan |
 | service secrets | denils `secrets/pokescanner-env.age` → `/run/agenix/pokescanner-env` (root 0400, read by systemd `EnvironmentFile`) | keys: `POKESCANNER_TOKEN` (API bearer), `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (pokecollector user `pokescanner`) | denils |
@@ -41,7 +41,7 @@ design in `docs/POKESCANNER-PLAN.md`.
 1. **Caddy + Authentik:** every path on `scan.nilss.dev` (the `/live*`, `/collection/*` and
    catch-all handles) has forward-auth; only `/outpost.goauthentik.io/*` is open (the
    outpost callback). The Authentik app `pokescan-live` is bound to the owner's user only.
-2. **The service (introduced in pokescan ddb93b8; live: 9d26328):**
+2. **The service (introduced in pokescan ddb93b8; live: 78dc0f0):**
    - `/identify`, `/price/*`, `/bundle`, `/trace/*`, `/collection/add`,
      `/public/stats`, `/live/loadlog` need `Authorization: Bearer $POKESCANNER_TOKEN`.
    - `/ref/*` and the full `/health` need a *trusted caller*. That is any of: the bearer; a
@@ -173,7 +173,8 @@ Cloudflare fronts scan.nilss.dev and ignored `no-cache` on the live page's `.js`
 
 **Current rollback (2026-10-04, from v24.2 `78dc0f0` + bundle-v24, back to v24.1 `2adb928` + bundle-v23):**
 `pct set 140 -mp0 /tank/pokescan/bundle-v23,mp=/var/lib/pokescanner/bundle,ro=1`, `git -C /tank/pokescan/src checkout 2adb928`,
-`pct reboot 140` (the mount change needs the restart); no denils change. Check: `curl -s http://10.0.1.40:8000/health | jq
+`pct reboot 140` (the mount change needs the restart). Optional: denils `commit = "2adb928"` + `update-pokescanner`
++ `systemctl restart pokescanner` so `/health.commit` stays truthful (since denils 5305914 it says 78dc0f0). Check: `curl -s http://10.0.1.40:8000/health | jq
 '{bundle_sha256,similar_hints}'` → `84df050d5e36` / 90; `/identify` has no `print_source` in `language`. One step further
 back (v24.1 → v24): `checkout 9d26328` + `systemctl restart pokescanner`, bundle-v23 as is (health has no `similar_hints`;
 the phone needs the bearer again).
@@ -400,18 +401,30 @@ user 401. Public without a cookie: every path 302 to auth.nilss.dev.
 = `live` = `plan-a` = **`78dc0f0`** (`release-v24.2`). New bundle **`/tank/pokescan/bundle-v24`** (sha 161c5780d77a: bank
 `number_classical_v22g_jar5b`, `supported_sets_v22_picker.json`, sidecar `identity_prints_v22_picker.json`, `hints_v22/`;
 client towers identical to bundle-v23, so `bundle_version` stays v22 and the device model cache key does not change).
-bundle-v23 untouched. No denils / Authentik / OPNsense change: mp0 is hand-applied (`proxmox.mountPoints = [ ]` in
-`hosts/pokescanner.nix`), so the denils comments that still name bundle-v23 and the `commit` label (9d26328) are stale
-labels only. Gate 0/132 changed vs v24.1, negatives 0/134, device 0/132, hints PASS, wild 0/800.
+bundle-v23 untouched. No Authentik / OPNsense change; mp0 is hand-applied (`proxmox.mountPoints = [ ]` in
+`hosts/pokescanner.nix`, Proxmox config is the source of truth). Denils label sync followed later the same day (below). Gate 0/132 changed vs v24.1, negatives 0/134, device 0/132, hints PASS, wild 0/800.
 ```
 git -C /tank/pokescan/src fetch /srv/repos/PicaLens/scanner/pokescan master && git -C /tank/pokescan/src checkout 78dc0f0
 pct set 140 -mp0 /tank/pokescan/bundle-v24,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140
-curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256,similar_hints}'   # 9d26328 (label) / v22 / 161c5780d77a / 90
+curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256,similar_hints}'   # 78dc0f0 (after the denils sync) / v22 / 161c5780d77a / 90
 ```
 Smoke test (2026-10-04): LAN bearer 401/401/200, `/bundle` 401; public paths 302 to auth (forged header too); from 10.0.0.1
 with `X-Authentik-Username: nils`: `auth_via: "sso"`, `/identify` 200 with `print_source`, other / no Origin 403, `/hint`
 200 webp; other user / no header 401. `/live` serves the new `overlay.js` / `backstack.js`.
 **Rollback:** see "Current rollback" above (mp0 → bundle-v23, `checkout 2adb928`, `pct reboot 140`).
+
+**denils label sync — 2026-10-04 ~15:00 Berlin** (owner yes 2026-10-04, PicaLens #4): denils `5305914` sets
+`commit = "78dc0f0"` in `pokescan-serve.nix` and names bundle-v24 in its comments and in the `pct set 140 -mp0`
+recreate recipe in `hosts/pokescanner.nix`. Before switching: `nixos-rebuild dry-activate` (build on builder, target
+CT 140): no package changes (`nix store diff-closures` lists only the system label; the nixpkgs bump in denils 70e1429
+gives identical packages here), the unit differs only in `POKESCANNER_COMMIT`; dbus-broker reload + home-manager-nilx
+restart from the new nixos-version string. `nix run .#update-pokescanner` → CT 140 generation 43 (42 = rollback:
+`ssh root@10.0.1.40 /nix/var/nix/profiles/system-42-link/bin/switch-to-configuration switch`).
+**Gotcha:** `pokescanner.path` restarted the service from the *old* unit during the switch, so /health still said
+9d26328 until `ssh root@10.0.1.40 systemctl restart pokescanner`. Always restart after `update-pokescanner`.
+Smoke test: health 78dc0f0 / v22 / 161c5780d77a / 90; LAN `/identify` no / wrong / right bearer 401 / 401 / 200
+(matcher commit 78dc0f0, `print_source` present), `/bundle` 401, `/hint` 200 webp; public `/`, `/live`, `/identify`,
+`/hint`, forged `X-Authentik-Username` → 302 to auth.nilss.dev.
 
 **Change SSO scope** (which paths need login): edit the `ForwardAuth` flag on the
 `scan.nilss.dev` handles in `/conf/config.xml` (script pattern: python + `ET`, never sed on
