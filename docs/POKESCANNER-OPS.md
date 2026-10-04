@@ -15,7 +15,7 @@ design in `docs/POKESCANNER-PLAN.md`.
 | **model bundle v24 (current)** | `/tank/pokescan/bundle-v24` (gallery v22 + bank v22g_jar5b + twins v24 + `supported_sets_v22_picker.json`, sidecar `identity_prints_v22_picker.json`, `hints_v22/`; sha 161c5780d77a; client towers byte-identical to v23) | CT 140 **mp0 since 2026-10-04 12:51 Berlin**, code pokescan 78dc0f0 (v24.2; denils 5305914). Health = 78dc0f0 / v22 / 161c5780d77a | pokescan |
 | model bundle v23 (rollback) | `/tank/pokescan/bundle-v23` (gallery v22 + bank v22g + twins v24, sha 84df050d5e36, + `hints_v22/`) | CT 140 mp0 2026-10-02 → 2026-10-04 (v23, v24, v24.1); rollback for v24.2: mp0 → bundle-v23 + `checkout 2adb928` + `pct reboot 140` | pokescan |
 | model bundle v22 (rollback) | `/tank/pokescan/bundle-v22` (sha 3d0eb299dc48) | kept for rollback: `checkout d43e4cc`, mp0 → bundle-v22, denils `commit = "d43e4cc"` (see "Current rollback" below) | pokescan |
-| service secrets | denils `secrets/pokescanner-env.age` → `/run/agenix/pokescanner-env` (root 0400, read by systemd `EnvironmentFile`) | keys: `POKESCANNER_TOKEN` (API bearer), `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (pokecollector user `pokescanner`) | denils |
+| service secrets | denils `secrets/pokescanner-env.age` → `/run/agenix/pokescanner-env` (root 0400, read by systemd `EnvironmentFile`) | keys: `POKESCANNER_TOKEN` (API bearer, rotated 2026-10-04 `c5651ea`), `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (pokecollector user `pokescanner`) | denils |
 | traces | CT 140 `/var/lib/pokescanner/traces/` (local disk, NOT backed up); one dir per `debug=1` identify: `trace.json` (full top-k, geometry), `source.jpg`, `plane.webp`, `overlay.webp` (~120–760 KB); no-card states keep only json + small overlay | swept by the service at startup + hourly: `POKESCANNER_TRACE_KEEP_DAYS` (90) then `POKESCANNER_TRACE_MAX_GB` (10), oldest first — knobs in `pokescan-serve.nix` (`traceKeepDays`, `traceMaxGb`) | pokescan `serve/app.py` `sweep_traces` |
 | CT 140 rootfs | `pool/subvol-140-disk-0`, **20 GB** since 2026-09-29 (was 8) | grow with `pct resize 140 rootfs <N>G` (online), then set `proxmox.disk` in `hosts/pokescanner.nix` and run a tofu `apply -refresh-only` in `~/.local/share/den-lxc/pokescanner` so `check-drift` is clean (never `provision-*`) | denils |
 | pokecollector (fork branch `pokescanner`, live `1dbcaca` since 2026-10-04) | CT 100 `alpine-komodo`, docker stack `/etc/komodo/stacks/pokecollector`, https://poke.nilss.dev | by hand (see below) — NOT via Komodo | `nstrelow/pokecollector` |
@@ -53,6 +53,14 @@ design in `docs/POKESCANNER-PLAN.md`.
    - `CDN-Cache-Control: no-store` is on every response, so Cloudflare never serves a copy
      of something fetched with the owner's session.
    - `/live*` and `/collection/status` stay open on the service; Caddy guards them.
+   - **Header forgery** (closed 2026-10-04, PicaLens #2): the service believes `X-Authentik-Username`
+     from Caddy, so a client's own copy must never get through. With ForwardAuth on, Caddy's
+     `forward_auth` deletes and re-sets every `copy_headers` header (Caddy 2.11.4). With ForwardAuth off
+     (public demo) the handle must carry the header object `e581c2db…` (`header_up -X-Authentik-*`);
+     `/root/pokescan_forwardauth.py on|off` switches both together and `status` exits 1 on a handle that
+     is neither. Never put the strip on a handle with ForwardAuth (it deletes the real SSO headers too),
+     and `request_header -X-Authentik-*` in the same handle does the same (Caddy runs it after
+     `forward_auth`).
 - pokecollector's backend calls `http://10.0.1.40:8000` over the LAN with the token
   (`EXTERNAL_MATCHER_TOKEN` in its `.env`), so Caddy doesn't affect it. Gatus uses
   `http://10.0.1.40:8000/health` over the LAN and still gets the full body, `disk` included.
@@ -191,7 +199,11 @@ curl -s http://10.0.1.40:8000/health | jq .commit
 # optional: bump `commit = "<rev>"` in pokescan-serve.nix and update-pokescanner
 ```
 
-**Rotate the API token** (do this — it was pasted into a chat once):
+**Rotate the API token** (last rotated 2026-10-04, denils `c5651ea`, CT 140 generation 44; rollback =
+generation 43 + the `.env.bak-pre-token-rotation-20261004` on CT 100). Work in a private scratch dir, never echo
+the token; check the new `.age` decrypts on CT 140 (`age -d -i /etc/ssh/ssh_host_ed25519_key`) before committing;
+`up -d --no-build --no-deps backend` changes only the env. Consumers: CT 140 (agenix) and pokecollector's
+`EXTERNAL_MATCHER_TOKEN`; Gatus and the live page use none.
 ```
 cd /root/denils
 ssh root@10.0.1.40 cat /run/agenix/pokescanner-env > /tmp/env.plain     # keep the collection lines
@@ -426,7 +438,8 @@ Smoke test: health 78dc0f0 / v22 / 161c5780d77a / 90; LAN `/identify` no / wrong
 (matcher commit 78dc0f0, `print_source` present), `/bundle` 401, `/hint` 200 webp; public `/`, `/live`, `/identify`,
 `/hint`, forged `X-Authentik-Username` → 302 to auth.nilss.dev.
 
-**Change SSO scope** (which paths need login): edit the `ForwardAuth` flag on the
+**Change SSO scope** (which paths need login; for `/live*` + the catch-all use `/root/pokescan_forwardauth.py`,
+which also switches the `X-Authentik-*` strip): edit the `ForwardAuth` flag on the
 `scan.nilss.dev` handles in `/conf/config.xml` (script pattern: python + `ET`, never sed on
 OPNsense's csh), then the two `configctl` commands. `/outpost.goauthentik.io/*` must stay
 routed to 10.0.1.10:9000 without forward-auth or logins loop.

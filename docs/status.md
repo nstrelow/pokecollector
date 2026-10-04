@@ -187,11 +187,12 @@ is handled separately.
 ## Known problems & pitfalls (2026-09-29)
 
 **Open problems**
-1. **Token in the browser.** `/identify` is bearer-only, so the live page needs the API token
-   (`/live?token=…` once). The token was pasted into a chat → rotate it (`POKESCANNER-OPS.md`).
-   Planned fix (needs owner approval, it changes auth): trusted-proxy mode — Caddy puts
-   `/identify` behind Authentik too, the service accepts `X-Authentik-Username` *instead of* the
-   bearer only from OPNsense's IP. Handing the bearer to SSO browsers was tried and rejected.
+1. ~~**Token in the browser.**~~ **Closed 2026-10-04.** Since v24.1 the live page signs in by the owner's
+   Authentik session (no bearer in the browser). The token that was pasted into a chat was **rotated
+   2026-10-04** (owner yes, PicaLens #2): denils `c5651ea` (`secrets/pokescanner-env.age`, CT 140 gen 44) and
+   `EXTERNAL_MATCHER_TOKEN` in the CT 100 `.env`; old token 401, new 200, pokecollector's matcher client
+   (health / bundle / identify) OK. Same day, Caddy strips client `X-Authentik-*` on any scan.nilss.dev
+   handle without ForwardAuth (`POKESCANNER-OPS.md`, "Header forgery").
 2. ~~Never tested on a real phone~~ tested on the owner's phone 2026-09-29 (owner feedback in Next steps
    item 7). Still open: scan 3 cards on the phone (a DP-era, a CP6 and an English card) to confirm
    v20–v24 on the live app (`/srv/repos/PicaLens/HANDOFF.md`).
@@ -237,10 +238,10 @@ is handled separately.
 
 ## Next steps (suggested order)
 
-1. Rotate the API token (5 min, `POKESCANNER-OPS.md`).
+1. ~~Rotate the API token~~ done 2026-10-04 (denils `c5651ea`).
 2. Real-phone session: scan 20 PRE / full-art cards on `scan.nilss.dev/live` and on the queue
    page; note fps, misfires, wrong cards, UX papercuts here. This decides everything below.
-3. Trusted-proxy auth (removes the token box) — owner approval needed.
+3. ~~Trusted-proxy auth (removes the token box)~~ done in v24.1 (2026-10-04).
 4. ~~Trace retention~~ done 09-29 (90 d / 10 GB). ~~Disk alert for CT 140~~ done 09-29: Gatus "Pokescanner disk"
    ntfy alert < 15 % free (denils 34b3150, item 7).
 5. **Latency (2026-09-29, done, `docs/POKESCANNER-LATENCY.md` Results)**: lane 1 → CT 140 has
