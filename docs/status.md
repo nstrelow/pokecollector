@@ -4,18 +4,17 @@ Read this first. Plan: `docs/POKESCANNER-PLAN.md`. Ops/runbook: `docs/POKESCANNE
 
 ## Live now (2026-10-04)
 
-- **Scanner service:** pokescan `2adb928` = release v24.1 (v24 + `/live` "similar card" hints + the page signs in
-  by the owner's Authentik session, no browser bearer; recognition identical to v24) on CT 140 `10.0.1.40:8000`
-  (scan.nilss.dev), bundle `/tank/pokescan/bundle-v23` (mp0) with the hint pictures in `bundle-v23/hints_v22/`,
-  source `/tank/pokescan/src` (mp1), denils `b65ced3` (unchanged). `POKESCANNER_LIVE_ISOLATED=1` (threaded Wasm) is on.
-- **Rollback:** `9d26328` + bundle-v23 as is (recipe: `docs/POKESCANNER-OPS.md`, "Common operations").
-- **Trunk:** pokescan `master` (2adb928); `live` / `plan-a` still at `9773e75` until the owner fast-forwards them;
-  lanes merge into master, never force-pushed.
+- **Scanner service:** pokescan `78dc0f0` = release v24.2 (v24.1 + picker features: fr/es/it/pt printings offered in
+  the add sheet, more ja set names, rarity; overlays close with Back / backdrop / Escape, 450 ms Add tap guard; vintage
+  ja number reader, bank v22g_jar5b) on CT 140 `10.0.1.40:8000` (scan.nilss.dev), deployed 2026-10-04 12:51 Berlin,
+  bundle `/tank/pokescan/bundle-v24` (mp0), source `/tank/pokescan/src` (mp1), denils `b65ced3` (unchanged).
+  `POKESCANNER_LIVE_ISOLATED=1` (threaded Wasm) is on. The page signs in by the owner's Authentik session (since v24.1).
+- **Rollback:** v24.1 = mp0 → bundle-v23 + `checkout 2adb928` + `pct reboot 140` (recipe: `docs/POKESCANNER-OPS.md`, "Common operations").
+- **Trunk:** pokescan `master` = `live` = `plan-a` (78dc0f0 + docs); lanes merge into master, never force-pushed.
 - **Repos:** everything lives under `/srv/repos/PicaLens` since 2026-10-03 (`scanner/pokescan`, `scanner/worktrees/<lane>`,
   `collection/pokecollector`, …; cross-repo state in `/srv/repos/PicaLens/HANDOFF.md`).
 - **Health:** `curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256,similar_hints}'` →
-  `9d26328 / v22 / 84df050d5e36 / 90` (`commit` is the denils label, not bumped this time; `similar_hints` shows the
-  v24.1 code).
+  `9d26328 / v22 / 161c5780d77a / 90` (`commit` is the denils label, not bumped; the sha shows bundle-v24).
 - pokecollector's backend keeps using the bearer over the LAN (unchanged).
 - **Collector (CT 100, poke.nilss.dev):** fork `pokescanner` @ `1dbcaca` (= `ux` merged, PicaLens #30: Back closes the
   open overlay, card dialog is a phone bottom sheet with a tappable backdrop and a sticky 44 px ✕), deployed
