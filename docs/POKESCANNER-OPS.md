@@ -17,7 +17,7 @@ design in `docs/POKESCANNER-PLAN.md`.
 | service secrets | denils `secrets/pokescanner-env.age` → `/run/agenix/pokescanner-env` (root 0400, read by systemd `EnvironmentFile`) | keys: `POKESCANNER_TOKEN` (API bearer), `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (pokecollector user `pokescanner`) | denils |
 | traces | CT 140 `/var/lib/pokescanner/traces/` (local disk, NOT backed up); one dir per `debug=1` identify: `trace.json` (full top-k, geometry), `source.jpg`, `plane.webp`, `overlay.webp` (~120–760 KB); no-card states keep only json + small overlay | swept by the service at startup + hourly: `POKESCANNER_TRACE_KEEP_DAYS` (90) then `POKESCANNER_TRACE_MAX_GB` (10), oldest first — knobs in `pokescan-serve.nix` (`traceKeepDays`, `traceMaxGb`) | pokescan `serve/app.py` `sweep_traces` |
 | CT 140 rootfs | `pool/subvol-140-disk-0`, **20 GB** since 2026-09-29 (was 8) | grow with `pct resize 140 rootfs <N>G` (online), then set `proxmox.disk` in `hosts/pokescanner.nix` and run a tofu `apply -refresh-only` in `~/.local/share/den-lxc/pokescanner` so `check-drift` is clean (never `provision-*`) | denils |
-| pokecollector (fork branch `pokescanner`) | CT 100 `alpine-komodo`, docker stack `/etc/komodo/stacks/pokecollector`, https://poke.nilss.dev | by hand (see below) — NOT via Komodo | `nstrelow/pokecollector` |
+| pokecollector (fork branch `pokescanner`, live `1dbcaca` since 2026-10-04) | CT 100 `alpine-komodo`, docker stack `/etc/komodo/stacks/pokecollector`, https://poke.nilss.dev | by hand (see below) — NOT via Komodo | `nstrelow/pokecollector` |
 | public entry | OPNsense Caddy: `scan.nilss.dev` → 10.0.1.40:8000; `poke.nilss.dev` → 10.0.1.10:3000 | `/conf/config.xml` `<reverseproxy>` (subdomain `158ae50d…` + 4 handles, **all three scanner handles with ForwardAuth since 2026-09-30**), `configctl template reload OPNsense/Caddy && configctl caddy reload` | — |
 | SSO | Authentik on CT 100: ProxyProvider "pokescan live" (forward-auth single app), app `pokescan-live`, embedded outpost (`authentik_host` = https://auth.nilss.dev); **owner-only** (see "Owner-only lockdown") | UI, or `docker exec authentik-server-1 ak shell -c '…'` | — |
 | monitoring | Gatus "Pokescanner" (vigil) → `/health` every 5 min; homepage tile (arr) | emitted by the denils feature aspect; `update-vigil` / `update-arr` after changes | denils |
@@ -214,6 +214,28 @@ Never redeploy/pull this stack from Komodo: its `file_paths` lack `docker-compos
 so it would pull upstream's ghcr 1.51.0 images (no external matcher). Fix in Mongo per
 `memory/host.md` if you want Komodo to match. If `docker` commands fail on CT 100, the daemon
 is stopped again: `pct exec 100 -- rc-service docker start` (containers survive via live-restore).
+
+A frontend-only change (no `backend/` diff) can build and recreate just the frontend:
+`... build frontend` then `... up -d --no-deps --no-build frontend`; the backend container keeps running.
+
+**Collector UX deploy 2026-10-04 ~10:10 Berlin** (owner yes 2026-10-04; PicaLens #30). Fork `pokescanner`
+a277a28 → `1dbcaca` (fast-forward to `ux`), frontend only, the recipe above with `build frontend` +
+`up -d --no-deps --no-build frontend`. Before it: `pokecollector-{frontend,backend}:local` tagged `:pre-ux` and
+`:prev` (frontend `f155908aacdb`, backend `8fbd5ae44c21`, both the 2026-09-29 build of `6fd78e1`; no code change
+between that and a277a28), stack source (incl. `.env`, without `data/`, `backups/`) in
+`/root/pokecollector-backups/stack-src-pre-ux-20261004-1009.tgz`. New frontend image `07b42e6648d0`, bundle
+`assets/index-COX-vhmw.js`. Checks: `npm test` 343 vitest + translations green; Playwright `overlay-back.spec.js`
++ `card-system.spec.js` 27 passed / 1 skipped (desktop skip of the phone-only test). This host's Playwright
+browser cache has revision 1243 only, so run with
+`PLAYWRIGHT_CHROMIUM_PATH=/root/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell`.
+Live smoke (390×844, `http://10.0.1.10:3000/collection`, non-GET API calls blocked): card dialog is a bottom sheet
+(top at y=56 of 844), ✕ 44 px stays in view after scrolling, backdrop tap / ✕ / Escape / browser Back each close it,
+Back stays on the page, no history entry left, no page errors; `/api/settings/scanner/external` reaches pokescan
+(`ok: true`). **Rollback (frontend):**
+```
+pct exec 100 -- sh -c 'cd /etc/komodo/stacks/pokecollector && docker tag pokecollector-frontend:pre-ux pokecollector-frontend:local && docker compose -p pokecollector -f docker-compose.yml -f docker-compose.build.yml -f compose.tz.yml up -d --no-deps --no-build frontend'
+```
+(optionally restore the source dirs from the tgz so a later rebuild doesn't bring `ux` back).
 
 **Roll back pokecollector**: `compose down --remove-orphans` (no `-v`), restore
 `/root/pokecollector-backups/stack-src-pre-pokescanner-20260929-0917.tgz` into
