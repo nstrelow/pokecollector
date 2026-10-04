@@ -8,11 +8,12 @@ design in `docs/POKESCANNER-PLAN.md`.
 | Piece | Where | How it's managed | Repo |
 |---|---|---|---|
 | pokescanner service (`pokescan.serve`) | CT 140 `pokescanner`, 10.0.1.40:8000, NixOS, 8 cores / 3 GB (cores 4 -> 8 on 2026-09-29, ORT threads stay 4) | denils (`modules/aspects/features/pokescan-serve.nix`, `hosts/pokescanner.nix`), `nix run .#update-pokescanner` | `/root/denils` |
-| pokescan source the service runs | `/tank/pokescan/src` (git checkout of the trunk `master`; **2adb928 since 2026-10-04**), bind-mounted ro at `/var/lib/pokescanner/src` (mp1) | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
+| pokescan source the service runs | `/tank/pokescan/src` (git checkout of the trunk `master`; **78dc0f0 since 2026-10-04 12:51 Berlin**, v24.2), bind-mounted ro at `/var/lib/pokescanner/src` (mp1) | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
 | model bundle v12 | `/tank/pokescan/bundle-v12` (1.6 GB incl. `ref_thumbs_v12/`), ro at `/var/lib/pokescanner/bundle` | rebuilt with `scripts/export_serve_bundle.py --out <newdir>` from a pokescan worktree; new versions get a NEW dir, then change `bundleDir` in the nix file | pokescan |
 | model bundle v12p3 (historical) | `/tank/pokescan/bundle-v12p3` (1.98 GB: v12 + `client/` towers fp16 172.9 MB / fp32 345.1 MB / int8wo 87.8 MB + unet 0.6 MB; bundle sha 0fac0cf6b1b1) | CT 140 mp0 2026-09-29 evening → 2026-09-30, then the v14 rollback bundle (historical; current rollback: d43e4cc + bundle-v22); the page picks the tower per device (WebGPU+shader-f16 → fp16, WebGPU → fp32, else int8wo). Its rollback then was mp0 → bundle-v12p2 (+ `pct reboot 140`) | pokescan |
 | model bundle v14 (historical) | `/tank/pokescan/bundle-v14` (2.33 GB: gallery v14 = 79,421 prints incl. English Classic + fr/it/pt/es SV/ME refs, `names_v14.json`, `ref_thumbs_v14/` 79,397, `client/` towers byte-identical to v12p3; bundle sha b7b8e8532325) | CT 140 mp0 2026-09-30 → 2026-10-02 ~09:50, code pokescan `live` 15d4869 (denils 6ad3ab7); replaced by v18/v20/v22/v23 (see the deploy blocks below) | pokescan |
-| **model bundle v23 (current)** | `/tank/pokescan/bundle-v23` (gallery v22 + bank v22g + twins v24, sha 84df050d5e36; client towers byte-identical to v22) | CT 140 **mp0 since 2026-10-02**, code pokescan 9d26328 (denils b65ced3). Health = 9d26328 / v22 / 84df050d5e36 | pokescan |
+| **model bundle v24 (current)** | `/tank/pokescan/bundle-v24` (gallery v22 + bank v22g_jar5b + twins v24 + `supported_sets_v22_picker.json`, sidecar `identity_prints_v22_picker.json`, `hints_v22/`; sha 161c5780d77a; client towers byte-identical to v23) | CT 140 **mp0 since 2026-10-04 12:51 Berlin**, code pokescan 78dc0f0 (v24.2; denils b65ced3 unchanged). Health = 9d26328 (label) / v22 / 161c5780d77a | pokescan |
+| model bundle v23 (rollback) | `/tank/pokescan/bundle-v23` (gallery v22 + bank v22g + twins v24, sha 84df050d5e36, + `hints_v22/`) | CT 140 mp0 2026-10-02 → 2026-10-04 (v23, v24, v24.1); rollback for v24.2: mp0 → bundle-v23 + `checkout 2adb928` + `pct reboot 140` | pokescan |
 | model bundle v22 (rollback) | `/tank/pokescan/bundle-v22` (sha 3d0eb299dc48) | kept for rollback: `checkout d43e4cc`, mp0 → bundle-v22, denils `commit = "d43e4cc"` (see "Current rollback" below) | pokescan |
 | service secrets | denils `secrets/pokescanner-env.age` → `/run/agenix/pokescanner-env` (root 0400, read by systemd `EnvironmentFile`) | keys: `POKESCANNER_TOKEN` (API bearer), `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (pokecollector user `pokescanner`) | denils |
 | traces | CT 140 `/var/lib/pokescanner/traces/` (local disk, NOT backed up); one dir per `debug=1` identify: `trace.json` (full top-k, geometry), `source.jpg`, `plane.webp`, `overlay.webp` (~120–760 KB); no-card states keep only json + small overlay | swept by the service at startup + hourly: `POKESCANNER_TRACE_KEEP_DAYS` (90) then `POKESCANNER_TRACE_MAX_GB` (10), oldest first — knobs in `pokescan-serve.nix` (`traceKeepDays`, `traceMaxGb`) | pokescan `serve/app.py` `sweep_traces` |
@@ -395,7 +396,7 @@ on those routes (pokecollector, scripts). uvicorn's proxy headers are off. `/hin
 (2026-10-04, from 10.0.0.1): with the header `auth_via: "sso"`, identify 200 / cross-origin 403; without it or as another
 user 401. Public without a cookie: every path 302 to auth.nilss.dev.
 
-**v24.2 — owner yes 2026-10-04 ~05:00** (`ux` with `picker` + `jareader`, PicaLens #30 / #7 / #6). pokescan master
+**v24.2 — DEPLOYED 2026-10-04 12:51 Berlin (10:51 UTC)** as `78dc0f0` + bundle-v24, owner yes 2026-10-04 ~05:00 (`ux` with `picker` + `jareader`, PicaLens #30 / #7 / #6). pokescan master
 = `live` = `plan-a` = **`78dc0f0`** (`release-v24.2`). New bundle **`/tank/pokescan/bundle-v24`** (sha 161c5780d77a: bank
 `number_classical_v22g_jar5b`, `supported_sets_v22_picker.json`, sidecar `identity_prints_v22_picker.json`, `hints_v22/`;
 client towers identical to bundle-v23, so `bundle_version` stays v22 and the device model cache key does not change).
@@ -407,6 +408,9 @@ git -C /tank/pokescan/src fetch /srv/repos/PicaLens/scanner/pokescan master && g
 pct set 140 -mp0 /tank/pokescan/bundle-v24,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140
 curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256,similar_hints}'   # 9d26328 (label) / v22 / 161c5780d77a / 90
 ```
+Smoke test (2026-10-04): LAN bearer 401/401/200, `/bundle` 401; public paths 302 to auth (forged header too); from 10.0.0.1
+with `X-Authentik-Username: nils`: `auth_via: "sso"`, `/identify` 200 with `print_source`, other / no Origin 403, `/hint`
+200 webp; other user / no header 401. `/live` serves the new `overlay.js` / `backstack.js`.
 **Rollback:** see "Current rollback" above (mp0 → bundle-v23, `checkout 2adb928`, `pct reboot 140`).
 
 **Change SSO scope** (which paths need login): edit the `ForwardAuth` flag on the
