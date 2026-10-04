@@ -9,6 +9,7 @@ import FallbackBadges from './FallbackBadges'
 import CardStateIndicators from './CardStateIndicators'
 import ImageZoomOverlay from './ImageZoomOverlay'
 import { CARD_SYSTEM_TOKENS } from './card-system/tokens'
+import { useBackClose } from './ui/useBackClose'
 
 export const FALLBACK_KIND_ORDER = ['data', 'price', 'image']
 
@@ -271,6 +272,18 @@ export function UnifiedCardDialog({
     setImageZoomOpen(false)
   }, [card?.id])
 
+  // the phone's Back button closes the card (the zoom first, when it is open)
+  const isOpen = Boolean(card)
+  useBackClose(isOpen, onClose)
+
+  // the page behind does not scroll while the card is open
+  useEffect(() => {
+    if (!isOpen) return undefined
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = previousOverflow }
+  }, [isOpen])
+
   useEffect(() => {
     if (!card) return undefined
     const previousFocus = document.activeElement
@@ -323,9 +336,11 @@ export function UnifiedCardDialog({
 
   const setNumber = getCardSetNumber(card)
   const dialog = (
+    // Phones: a bottom sheet that leaves a strip of backdrop above it to tap (closes).
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-3 backdrop-blur-sm sm:p-6"
+      className="fixed inset-0 z-50 flex items-end justify-center bg-black/80 pt-14 backdrop-blur-sm sm:items-center sm:p-6"
       onClick={onClose}
+      data-testid="card-dialog-backdrop"
     >
       <div
         ref={dialogRef}
@@ -335,20 +350,24 @@ export function UnifiedCardDialog({
         inert={imageZoomOpen ? '' : undefined}
         aria-label={card.name}
         className={clsx(
-          'relative max-h-[calc(100dvh-1.5rem)] w-full max-w-6xl overflow-y-auto rounded-2xl border border-white/10 bg-bg-surface shadow-2xl sm:max-h-[calc(100dvh-3rem)]',
+          'relative max-h-full w-full max-w-6xl overflow-y-auto overscroll-contain rounded-t-2xl border border-white/10 bg-bg-surface pb-[env(safe-area-inset-bottom)] shadow-2xl sm:max-h-[calc(100dvh-3rem)] sm:rounded-2xl sm:pb-0',
           className,
         )}
         onClick={event => event.stopPropagation()}
       >
-        <button
-          ref={resolvedCloseButtonRef}
-          type="button"
-          onClick={onClose}
-          className="absolute right-3 top-3 z-50 grid h-9 w-9 place-items-center rounded-full border border-white/15 bg-black/75 text-white shadow-lg transition-colors hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-red"
-          aria-label={t('common.close')}
-        >
-          <X size={18} aria-hidden />
-        </button>
+        {/* stays in view while the card scrolls (a zero-height sticky row) */}
+        <div className="sticky top-0 z-50 flex h-0 justify-end">
+          <button
+            ref={resolvedCloseButtonRef}
+            type="button"
+            onClick={onClose}
+            className="mr-2 mt-2 grid h-11 w-11 place-items-center rounded-full border border-white/15 bg-black/75 text-white shadow-lg transition-colors hover:bg-black focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-red"
+            aria-label={t('common.close')}
+            data-testid="card-dialog-close"
+          >
+            <X size={18} aria-hidden />
+          </button>
+        </div>
 
         <div className="grid gap-4 p-4 sm:grid-cols-[minmax(220px,300px)_minmax(0,1fr)] sm:gap-6 sm:p-6">
           <aside className="min-w-0 sm:border-r sm:border-white/8 sm:pr-6">

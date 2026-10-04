@@ -22,6 +22,7 @@ import toast from 'react-hot-toast'
 import { hasCatalogueImage, resolveCardImageUrl } from '../utils/imageUrl'
 import MoneyInput from '../components/MoneyInput'
 import { parseMoneyInputValue } from '../utils/moneyInput'
+import { useDialogBehavior } from '../components/ui/dialogBehavior'
 
 const RARITY_COLORS = [
   '#EF1515', '#3b82f6', '#22c55e', '#eab308', '#8b5cf6',
@@ -69,6 +70,8 @@ function AddExpenseModal({ onClose, onSuccess }) {
     onError: () => toast.error(t('analytics.expenseSaveError')),
   })
 
+  const { dialogRef: sheetRef, onDialogKeyDown: onSheetKeyDown } = useDialogBehavior(true, onClose)
+
   const handleSubmit = (e) => {
     e.preventDefault()
     if (!exchangeRateReady || !amount || parseFloat(amount) <= 0) return
@@ -85,10 +88,11 @@ function AddExpenseModal({ onClose, onSuccess }) {
     <div className="fixed inset-0 z-50 bg-black/60 flex items-end md:items-center justify-center md:bg-black/80 md:backdrop-blur-sm"
       onClick={onClose}>
       <div className={[
-        'w-full rounded-t-2xl max-h-[90dvh] overflow-y-auto',
+        'w-full rounded-t-2xl max-h-[90dvh] overflow-y-auto overscroll-contain',
         'bg-bg-surface border-t border-border',
         'md:rounded-2xl md:border md:max-w-md md:max-h-[80vh]',
-      ].join(' ')} onClick={e => e.stopPropagation()}>
+      ].join(' ')} onClick={e => e.stopPropagation()}
+        ref={sheetRef} role="dialog" aria-modal="true" tabIndex={-1} onKeyDown={onSheetKeyDown} aria-label={t('analytics.logExpense')}>
         <div className="flex justify-center pt-3 pb-1 md:hidden">
           <div className="w-10 h-1 bg-border rounded-full" />
         </div>
@@ -98,7 +102,7 @@ function AddExpenseModal({ onClose, onSuccess }) {
               <ShoppingCart size={18} className="text-brand-red" />
               <h2 className="text-lg font-bold text-text-primary">{t('analytics.logExpense')}</h2>
             </div>
-            <button onClick={onClose} className="text-text-muted hover:text-text-primary transition-colors">
+            <button onClick={onClose} className="-mr-2 grid h-11 w-11 flex-shrink-0 place-items-center rounded-full text-text-muted hover:bg-bg-elevated hover:text-text-primary" aria-label={t('common.close')}>
               <X size={20} />
             </button>
           </div>

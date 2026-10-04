@@ -100,6 +100,8 @@ const en = {
   },
   common: {
     back: 'Back',
+    discard: 'Discard',
+    discardChangesConfirm: 'Discard what you entered and close?',
     loading: 'Loading...',
     noResults: 'No results',
     save: 'Save',

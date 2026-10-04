@@ -29,6 +29,7 @@ import PrintingDetailSelector from '../components/PrintingDetailSelector'
 import PrintingDetailTagManager from '../components/PrintingDetailTagManager'
 import { normalizePrintingDetailName, printingDetailNames } from '../utils/printingDetails'
 import { CARD_VARIANTS } from '../utils/cardVariants'
+import { useDialogBehavior } from '../components/ui/dialogBehavior'
 
 const CONDITIONS = ['Mint', 'NM', 'LP', 'MP', 'HP']
 const CONDITION_COLORS = {
@@ -199,6 +200,7 @@ const downloadCsvImportTemplate = () => {
 }
 
 function CsvImportModal({ t, onClose, onChooseFile, onDownloadTemplate, isImporting }) {
+  const { dialogRef: sheetRef, onDialogKeyDown: onSheetKeyDown } = useDialogBehavior(true, onClose)
   return createPortal(
     <div
       className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm md:flex md:items-center md:justify-center md:bg-black/80"
@@ -211,6 +213,7 @@ function CsvImportModal({ t, onClose, onChooseFile, onDownloadTemplate, isImport
           'md:static md:rounded-2xl md:border md:max-w-lg md:w-full md:max-h-[85vh] md:animate-none',
         ].join(' ')}
         onClick={e => e.stopPropagation()}
+        ref={sheetRef} role="dialog" aria-modal="true" tabIndex={-1} onKeyDown={onSheetKeyDown} aria-label={t('collection.csvImportFormatTitle')}
       >
         <div className="flex justify-center pt-3 pb-1 md:hidden">
           <div className="w-10 h-1 bg-border rounded-full" />
@@ -222,7 +225,7 @@ function CsvImportModal({ t, onClose, onChooseFile, onDownloadTemplate, isImport
               <h2 className="text-base font-bold text-text-primary">{t('collection.csvImportFormatTitle')}</h2>
               <p className="text-xs text-text-secondary mt-1">{t('collection.csvImportFormatDescription')}</p>
             </div>
-            <button onClick={onClose} className="text-text-muted hover:text-text-primary flex-shrink-0 p-1">
+            <button onClick={onClose} className="-mr-2 -mt-2 grid h-11 w-11 flex-shrink-0 place-items-center rounded-full text-text-muted hover:bg-bg-elevated hover:text-text-primary" aria-label={t('common.close')}>
               <X size={18} />
             </button>
           </div>

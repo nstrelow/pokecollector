@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { MoreHorizontal } from 'lucide-react'
+import { useBackClose } from './useBackClose'
 
 export const overflowMenuItemClass = 'flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm text-text-secondary transition-colors hover:bg-bg-elevated hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50'
 
@@ -24,6 +25,8 @@ export default function OverflowMenu({ label, children }) {
   }, [open])
 
   const close = () => setOpen(false)
+  // the phone's Back button closes the menu instead of leaving the page
+  useBackClose(open, close)
 
   return (
     <div ref={containerRef} className="relative">

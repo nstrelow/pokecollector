@@ -12,6 +12,7 @@ import { HOLO_FIELD_MAP } from '../utils/prices'
 import { useDetailBackNavigation, useScrollToTopOnPush } from '../hooks/useListScrollRestoration'
 import { CardDisplay, CardLegend } from '../components/card-system'
 import { CardModal } from '../components/CardItem'
+import { useDialogBehavior } from '../components/ui/dialogBehavior'
 
 const SET_SORT_OPTIONS = [
   'number',
@@ -135,6 +136,9 @@ export default function SetDetail() {
     addOwnedSubmittingRef.current = true
     addOwnedMutation.mutate(args)
   }
+
+  const closeBinderPicker = () => setBinderPickerOpen(false)
+  const { dialogRef: sheetRef, onDialogKeyDown: onSheetKeyDown } = useDialogBehavior(binderPickerOpen, closeBinderPicker)
 
   if (isReturningToSets) {
     return <div className="fixed inset-0 z-40 bg-bg" aria-hidden="true" />
@@ -353,11 +357,14 @@ export default function SetDetail() {
           onClick={() => setBinderPickerOpen(false)}
         >
           <div
+            ref={sheetRef}
+            tabIndex={-1}
+            onKeyDown={onSheetKeyDown}
             role="dialog"
             aria-modal="true"
             aria-labelledby="add-owned-to-binder-title"
             className={[
-              'fixed bottom-0 left-0 right-0 rounded-t-2xl max-h-[90dvh] overflow-y-auto',
+              'fixed bottom-0 left-0 right-0 rounded-t-2xl max-h-[90dvh] overflow-y-auto overscroll-contain',
               'bg-bg-surface border-t border-border more-sheet-enter',
               'md:static md:w-full md:max-w-md md:rounded-2xl md:border md:max-h-[85vh] md:animate-none',
             ].join(' ')}
@@ -374,7 +381,7 @@ export default function SetDetail() {
                 </h2>
                 <button
                   onClick={() => setBinderPickerOpen(false)}
-                  className="text-text-muted hover:text-text-primary flex-shrink-0 p-1"
+                  className="-mr-2 -mt-2 grid h-11 w-11 flex-shrink-0 place-items-center rounded-full text-text-muted hover:bg-bg-elevated hover:text-text-primary"
                   aria-label={t('common.close')}
                 >
                   <X size={18} />

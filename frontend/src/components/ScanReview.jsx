@@ -263,7 +263,7 @@ export function CardZoomModal({
   // Either card will do — both frames are the same size by construction.
   const frameRef = useRef(null)
   const closeOrReset = useCallback(() => (zoomed ? reset() : onClose()), [onClose, reset, zoomed])
-  const { dialogRef, onDialogKeyDown } = useDialogBehavior(true, closeOrReset, { restoreFocus: false })
+  const { dialogRef, onDialogKeyDown } = useDialogBehavior(true, closeOrReset, { restoreFocus: false, mayStay: true })
   const onModalKeyDown = e => {
     if (e.key === 'ArrowLeft') { e.preventDefault(); step(-1); return }
     if (e.key === 'ArrowRight') { e.preventDefault(); step(1); return }

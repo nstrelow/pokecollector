@@ -3,9 +3,13 @@ import ReactDOM from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Toaster } from 'react-hot-toast'
 import App from './App.jsx'
+import { installBackStack } from './components/ui/useBackClose'
 import './components/card-system/tokens.css'
 import './components/card-system/styles.css'
 import './index.css'
+
+// Back closes the open overlay first; installed before the router listens to popstate
+installBackStack()
 
 // Apply saved theme before first paint to prevent flash
 const savedTheme = localStorage.getItem('theme')

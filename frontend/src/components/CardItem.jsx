@@ -21,6 +21,7 @@ import UnifiedCard, { UnifiedCardDialog } from './UnifiedCard'
 import CardPriceDetails from './card-system/CardPriceDetails'
 import PrintingDetailBadges from './PrintingDetailBadges'
 import PrintingDetailSelector from './PrintingDetailSelector'
+import { useDialogBehavior } from './ui/dialogBehavior'
 
 const RARITY_COLORS = {
   'Common': 'text-text-secondary',
@@ -56,7 +57,24 @@ export function CustomCardModal({ onClose, onCreated, sets: setsProp = [], autoA
   const [variant, setVariant] = useState('Normal')
   const [printingDetails, setPrintingDetails] = useState([])
   const [purchasePrice, setPurchasePrice] = useState('')
+  const [formTouched, setFormTouched] = useState(false)
   const queryClient = useQueryClient()
+
+  // Backdrop, Back, Escape and ✕ all come here: a half-filled form is not dropped
+  // without asking
+  const requestClose = async () => {
+    if (formTouched && !createdCard) {
+      const discard = await confirmDialog({
+        title: t('common.close'),
+        message: t('common.discardChangesConfirm'),
+        confirmLabel: t('common.discard'),
+        destructive: true,
+      })
+      if (!discard) return
+    }
+    onClose()
+  }
+  const { dialogRef: sheetRef, onDialogKeyDown: onSheetKeyDown } = useDialogBehavior(true, requestClose, { mayStay: true })
 
   const { data: fetchedSets = [] } = useQuery({
     queryKey: ['sets', settings.language || 'en'],
@@ -193,12 +211,13 @@ export function CustomCardModal({ onClose, onCreated, sets: setsProp = [], autoA
 
   return createPortal(
     <div className="fixed inset-0 z-50 bg-black/60 md:flex md:items-center md:justify-center md:bg-black/80 md:backdrop-blur-sm"
-      onClick={onClose}>
+      onClick={requestClose}>
       <div className={[
-        'fixed bottom-0 left-0 right-0 rounded-t-2xl max-h-[90dvh] overflow-y-auto',
+        'fixed bottom-0 left-0 right-0 rounded-t-2xl max-h-[90dvh] overflow-y-auto overscroll-contain',
         'bg-bg-surface border-t border-border more-sheet-enter',
         'md:static md:rounded-2xl md:border md:max-w-lg md:w-full md:max-h-[85vh] md:animate-none',
-      ].join(' ')} onClick={(e) => e.stopPropagation()}>
+      ].join(' ')} onClick={(e) => e.stopPropagation()}
+        ref={sheetRef} role="dialog" aria-modal="true" tabIndex={-1} onKeyDown={onSheetKeyDown} aria-label={isEditMode ? t('card.editCard') : t('cardSearch.createCustomCard')}>
         <div className="flex justify-center pt-3 pb-1 md:hidden">
           <div className="w-10 h-1 bg-border rounded-full" />
         </div>
@@ -211,13 +230,13 @@ export function CustomCardModal({ onClose, onCreated, sets: setsProp = [], autoA
               </h2>
               <span className="text-xs bg-yellow/20 text-yellow px-2 py-0.5 rounded-full">✏️ {t('cardSearch.customCard')}</span>
             </div>
-            <button onClick={onClose} className="text-text-muted hover:text-text-primary transition-colors">
+            <button onClick={requestClose} className="-mr-2 grid h-11 w-11 flex-shrink-0 place-items-center rounded-full text-text-muted hover:bg-bg-elevated hover:text-text-primary" aria-label={t('common.close')}>
               <X size={20} />
             </button>
           </div>
 
           {!createdCard ? (
-            <form onSubmit={handleCreate} className="space-y-4">
+            <form onSubmit={handleCreate} onChangeCapture={() => setFormTouched(true)} className="space-y-4">
               <div>
                 <label className="text-xs text-text-secondary mb-1 block font-medium">
                   {t('common.name')} <span className="text-brand-red">*</span>
@@ -316,7 +335,7 @@ export function CustomCardModal({ onClose, onCreated, sets: setsProp = [], autoA
                     : (createMutation.isPending ? t('common.saving') : (autoAddCollection ? t('cardSearch.createAndAdd') : t('cardSearch.createCustomCard')))
                   }
                 </button>
-                <button type="button" onClick={onClose} className="btn-ghost">{t('common.cancel')}</button>
+                <button type="button" onClick={requestClose} className="btn-ghost">{t('common.cancel')}</button>
               </div>
             </form>
           ) : (

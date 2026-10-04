@@ -1,4 +1,5 @@
 import { Download, Upload, X } from 'lucide-react'
+import { useDialogBehavior } from '../ui/dialogBehavior'
 
 export const BINDER_CSV_IMPORT_HEADER = 'set_code,number,required_quantity,lang,variant,condition,printing_details,collection_item_id'
 const BINDER_CSV_IMPORT_TEMPLATE = `${BINDER_CSV_IMPORT_HEADER}\nBLK,057,4,de,Holo,NM,Cosmos Holo|Play! Pokémon,\n`
@@ -27,12 +28,14 @@ export default function BinderCsvImportModal({ t, listType = 'collection', onClo
     : isCollection
       ? 'binderTypes.csvImportCollectionBehavior'
       : 'binderTypes.csvImportWishlistBehavior'
+  const { dialogRef: sheetRef, onDialogKeyDown: onSheetKeyDown } = useDialogBehavior(true, onClose)
 
   return (
     <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm md:flex md:items-center md:justify-center md:bg-black/80" onClick={onClose}>
       <div
         className="fixed bottom-0 left-0 right-0 max-h-[90dvh] overflow-y-auto rounded-t-2xl border-t border-border bg-bg-surface md:static md:max-h-[85vh] md:w-full md:max-w-lg md:rounded-2xl md:border"
         onClick={event => event.stopPropagation()}
+        ref={sheetRef} role="dialog" aria-modal="true" tabIndex={-1} onKeyDown={onSheetKeyDown} aria-label={t('binderTypes.csvImportTitle')}
       >
         <div className="flex justify-center pb-1 pt-3 md:hidden"><div className="h-1 w-10 rounded-full bg-border" /></div>
         <div className="space-y-4 p-5">
@@ -41,7 +44,7 @@ export default function BinderCsvImportModal({ t, listType = 'collection', onClo
               <h2 className="text-base font-bold text-text-primary">{t('binderTypes.csvImportTitle')}</h2>
               <p className="mt-1 text-xs text-text-secondary">{t(descriptionKey)}</p>
             </div>
-            <button type="button" onClick={onClose} className="flex-shrink-0 p-1 text-text-muted hover:text-text-primary" aria-label={t('common.close')}><X size={18} /></button>
+            <button type="button" onClick={onClose} className="-mr-2 -mt-2 grid h-11 w-11 flex-shrink-0 place-items-center rounded-full text-text-muted hover:bg-bg-elevated hover:text-text-primary" aria-label={t('common.close')}><X size={18} /></button>
           </div>
 
           <div className="grid grid-cols-2 gap-2">

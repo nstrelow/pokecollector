@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useBackClose } from './useBackClose'
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -9,8 +10,11 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
-export function useDialogBehavior(isOpen, onClose, { restoreFocus = true } = {}) {
+// Every dialog, sheet and overlay built on this closes with Escape and with the phone's
+// Back button (useBackClose), keeps Tab inside and gives focus back when it closes.
+export function useDialogBehavior(isOpen, onClose, { restoreFocus = true, closeOnBack = true, mayStay = false } = {}) {
   const dialogRef = useRef(null)
+  useBackClose(isOpen && closeOnBack, onClose, { mayStay })
 
   useEffect(() => {
     if (!isOpen) return undefined

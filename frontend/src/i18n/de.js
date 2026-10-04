@@ -98,6 +98,8 @@ const de = {
     customImageDesc: 'Manueller Bild-Fallback, solange die API kein Bild liefert',
   },
   common: {
+    discard: 'Verwerfen',
+    discardChangesConfirm: 'Eingaben verwerfen und schließen?',
     back: 'Zurück',
     loading: 'Laden...',
     noResults: 'Keine Ergebnisse',

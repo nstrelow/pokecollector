@@ -10,6 +10,7 @@ import { getCustomMatches } from '../api/client'
 import { useAuth } from '../contexts/AuthContext'
 import { useSettings } from '../contexts/SettingsContext'
 import clsx from 'clsx'
+import { useDialogBehavior } from './ui/dialogBehavior'
 
 export default function BottomNav() {
   const { t } = useSettings()
@@ -48,6 +49,8 @@ export default function BottomNav() {
     setShowMore(false)
     navigate(to)
   }
+  const closeMore = () => setShowMore(false)
+  const { dialogRef: sheetRef, onDialogKeyDown: onSheetKeyDown } = useDialogBehavior(showMore, closeMore)
 
   const handleLogout = () => {
     setShowMore(false)
@@ -102,7 +105,8 @@ export default function BottomNav() {
           />
 
           {/* Sheet panel */}
-          <div className="fixed bottom-0 left-0 right-0 z-50 bg-bg-surface border-t border-border rounded-t-2xl lg:hidden more-sheet-enter">
+          <div className="fixed bottom-0 left-0 right-0 z-50 bg-bg-surface border-t border-border rounded-t-2xl lg:hidden more-sheet-enter"
+            ref={sheetRef} role="dialog" aria-modal="true" tabIndex={-1} onKeyDown={onSheetKeyDown} aria-label={t('nav.more')}>
             {/* Drag handle */}
             <div className="flex justify-center pt-3 pb-1">
               <div className="w-10 h-1 bg-border rounded-full" />
@@ -113,7 +117,8 @@ export default function BottomNav() {
               <h3 className="text-sm font-semibold text-text-primary">{t('nav.more')}</h3>
               <button
                 onClick={() => setShowMore(false)}
-                className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-elevated transition-colors"
+                className="-mr-2 grid h-11 w-11 flex-shrink-0 place-items-center rounded-full text-text-muted hover:bg-bg-elevated hover:text-text-primary transition-colors"
+                aria-label={t('common.close')}
               >
                 <X size={18} />
               </button>

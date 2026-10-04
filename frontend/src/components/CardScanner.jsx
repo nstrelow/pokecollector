@@ -250,6 +250,11 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
     if (scanPreviewRef.current) URL.revokeObjectURL(scanPreviewRef.current)
   }, [])
 
+  // Back / Escape go through closeScanner (it asks before dropping staged photos)
+  const closeScannerRef = useRef(null)
+  const { dialogRef: scannerRef, onDialogKeyDown: onScannerKeyDown } = useDialogBehavior(
+    isOpen, () => closeScannerRef.current?.(), { mayStay: true })
+
   if (!isOpen) return null
 
   const handleFile = async (file) => {
@@ -340,6 +345,8 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
     reset()
     onClose?.()
   }
+  closeScannerRef.current = closeScanner
+
 
   const submitBatch = async () => {
     if (!stagedFiles.length || submittingBatch) return
@@ -362,16 +369,17 @@ export default function CardScanner({ isOpen, onClose, onCardSelected }) {
 
   return createPortal(
     <div className="fixed inset-0 z-[200] flex flex-col"
+      ref={scannerRef} role="dialog" aria-modal="true" aria-label={t('scanner.title')} tabIndex={-1} onKeyDown={onScannerKeyDown}
       style={{ background: 'rgba(0,0,0,0.95)', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)' }}>
 
       {/* Header */}
-      <div className="flex items-center justify-between px-4 pt-6 pb-4 flex-shrink-0">
+      <div className="flex items-center justify-between px-4 pt-[max(1.5rem,env(safe-area-inset-top))] pb-4 flex-shrink-0">
         <div>
           <p className="text-[10px] text-text-muted uppercase tracking-[0.2em]">{t('scanner.title')}</p>
           <h2 className="text-lg font-black text-white">{t('scanner.subtitle')}</h2>
         </div>
-        <button onClick={closeScanner}
-          className="w-9 h-9 rounded-full flex items-center justify-center"
+        <button onClick={closeScanner} aria-label={t('common.close')}
+          className="w-11 h-11 rounded-full flex items-center justify-center"
           style={{ background: 'rgba(255,255,255,0.08)' }}>
           <X size={18} className="text-text-muted" />
         </button>

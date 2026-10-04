@@ -22,6 +22,7 @@ import CardListPicker from '../components/card-lists/CardListPicker'
 import CardListGallery from '../components/card-lists/CardListGallery'
 import { useDynamicFilterUrlState } from '../hooks/useDynamicFilterUrlState'
 import PrintingDetailBadges from '../components/PrintingDetailBadges'
+import { useDialogBehavior } from '../components/ui/dialogBehavior'
 
 const SPRITE_BASE_URL = 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/versions/generation-v/black-white/animated'
 const BINDER_FILTER_DEFINITIONS = {
@@ -367,6 +368,9 @@ export default function BinderDetail() {
     if (binderType === 'deck') navigate(`/decks/${binderId}`, { replace: true })
   }, [binderId, binderType, navigate])
 
+  const closePrintOptimizer = () => setShowPrintOptimizer(false)
+  const { dialogRef: sheetRef, onDialogKeyDown: onSheetKeyDown } = useDialogBehavior(showPrintOptimizer, closePrintOptimizer)
+
   if (isLoading) return <div className="skeleton h-64 rounded-xl" />
   if (binderType === 'deck') return <div className="skeleton h-64 rounded-xl" />
 
@@ -696,8 +700,9 @@ export default function BinderDetail() {
       {showPrintOptimizer && (
         <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm md:flex md:items-center md:justify-center md:bg-black/80" onClick={() => setShowPrintOptimizer(false)}>
           <div
-            className="fixed bottom-0 left-0 right-0 rounded-t-2xl max-h-[90dvh] overflow-y-auto bg-bg-surface border-t border-border md:static md:rounded-2xl md:border md:max-w-3xl md:w-full md:max-h-[85vh]"
+            className="fixed bottom-0 left-0 right-0 rounded-t-2xl max-h-[90dvh] overflow-y-auto overscroll-contain bg-bg-surface border-t border-border md:static md:rounded-2xl md:border md:max-w-3xl md:w-full md:max-h-[85vh]"
             onClick={e => e.stopPropagation()}
+            ref={sheetRef} role="dialog" aria-modal="true" tabIndex={-1} onKeyDown={onSheetKeyDown} aria-label={t('binderTypes.optimizePrints')}
           >
             <div className="flex justify-center pt-3 pb-1 md:hidden"><div className="w-10 h-1 bg-border rounded-full" /></div>
             <div className="p-5 space-y-4">
@@ -706,7 +711,7 @@ export default function BinderDetail() {
                   <h2 className="text-base font-bold text-text-primary">{t('binderTypes.optimizePrints')}</h2>
                   <p className="text-xs text-text-secondary mt-1">{t('binderTypes.optimizePrintsHelp')}</p>
                 </div>
-                <button onClick={() => setShowPrintOptimizer(false)} className="text-text-muted hover:text-text-primary flex-shrink-0 p-1" aria-label={t('common.close')}>
+                <button onClick={() => setShowPrintOptimizer(false)} className="-mr-2 -mt-2 grid h-11 w-11 flex-shrink-0 place-items-center rounded-full text-text-muted hover:bg-bg-elevated hover:text-text-primary" aria-label={t('common.close')}>
                   <X size={18} />
                 </button>
               </div>

@@ -14,10 +14,10 @@ import { useDialogBehavior } from './dialogBehavior'
  *   children {node}     — sheet content
  *   className {string}  — extra classes for the panel
  */
-export default function Sheet({ isOpen, onClose, title, children, className = '', manageBodyScroll = true, restoreFocus = true, isObscured = false }) {
+export default function Sheet({ isOpen, onClose, title, children, className = '', manageBodyScroll = true, restoreFocus = true, isObscured = false, closeOnBack = true }) {
   const { t } = useSettings()
   const titleId = useId()
-  const { dialogRef, onDialogKeyDown } = useDialogBehavior(isOpen, onClose, { restoreFocus })
+  const { dialogRef, onDialogKeyDown } = useDialogBehavior(isOpen, onClose, { restoreFocus, closeOnBack })
 
   // Lock body scroll while sheet is open
   useEffect(() => {
@@ -64,11 +64,11 @@ export default function Sheet({ isOpen, onClose, title, children, className = ''
 
         {/* Header */}
         {title && (
-          <div className="flex items-center justify-between px-4 py-3 border-b border-border flex-shrink-0">
+          <div className="flex items-center justify-between px-4 py-1.5 border-b border-border flex-shrink-0">
             <h2 id={titleId} className="text-base font-semibold text-text-primary">{title}</h2>
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-elevated transition-colors"
+              className="-mr-2 grid h-11 w-11 flex-shrink-0 place-items-center rounded-full text-text-muted hover:text-text-primary hover:bg-bg-elevated transition-colors"
               aria-label={t('common.close')}
             >
               <X size={18} />
@@ -77,7 +77,7 @@ export default function Sheet({ isOpen, onClose, title, children, className = ''
         )}
 
         {/* Scrollable content */}
-        <div className="flex-1 overflow-y-auto safe-area-bottom">
+        <div className="flex-1 overflow-y-auto overscroll-contain safe-area-bottom">
           {children}
         </div>
       </div>
