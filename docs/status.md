@@ -17,6 +17,13 @@ Read this first. Plan: `docs/POKESCANNER-PLAN.md`. Ops/runbook: `docs/POKESCANNE
   `9d26328 / v22 / 84df050d5e36 / 90` (`commit` is the denils label, not bumped this time; `similar_hints` shows the
   v24.1 code).
 - pokecollector's backend keeps using the bearer over the LAN (unchanged).
+- **Collector (CT 100, poke.nilss.dev):** fork `pokescanner` @ `1dbcaca` (= `ux` merged, PicaLens #30: Back closes the
+  open overlay, card dialog is a phone bottom sheet with a tappable backdrop and a sticky 44 px ✕), deployed
+  2026-10-04 ~10:10 Berlin, **frontend only** (image `pokecollector-frontend:local` = `07b42e6648d0`). Backend
+  untouched: image `8fbd5ae44c21`, container up since 2026-09-29, code identical to `6fd78e1`.
+  **Rollback:** images `pokecollector-frontend:pre-ux` (`f155908aacdb`, the 2026-09-29 build of `6fd78e1`) and
+  `pokecollector-backend:pre-ux`; stack source `/root/pokecollector-backups/stack-src-pre-ux-20261004-1009.tgz`
+  (recipe: `docs/POKESCANNER-OPS.md`, "Collector UX deploy 2026-10-04").
 
 The sections below are dated snapshots (newest first) kept as history.
 
