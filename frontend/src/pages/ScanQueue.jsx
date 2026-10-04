@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Clock3, Loader2, ScanLine, Trash2 } from 'lucide-react'
 import toast from 'react-hot-toast'
@@ -83,6 +83,10 @@ function JobRow({ job, onOpen, retryNow, t }) {
 function JobDetail({ jobId, onObscuredChange }) {
   const { t } = useSettings()
   const navigate = useNavigate()
+  const location = useLocation()
+  // "Back to scans" is a real Back when the list opened this job (keeps its place);
+  // opened from a link (e.g. the scanner's Queue), it replaces this page with the list
+  const backToScans = () => (location.state?.fromScanList ? navigate(-1) : navigate('/scans', { replace: true }))
   const queryClient = useQueryClient()
   const [addSelection, setAddSelection] = useState(null)
   const [confirmation, setConfirmation] = useState(null)
@@ -187,12 +191,12 @@ function JobDetail({ jobId, onObscuredChange }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
-        <button type="button" onClick={() => navigate('/scans')}
-          className="btn-ghost px-3 py-1.5 text-sm">
+        <button type="button" onClick={backToScans}
+          className="btn-ghost min-h-11 px-3 py-1.5 text-sm">
           <ArrowLeft size={16} /> {t('scanner.backToScans')}
         </button>
         <button type="button" onClick={discardJob} disabled={deleteMutation.isPending}
-          className="btn-ghost h-9 w-9 border-brand-red/30 p-0 text-brand-red hover:bg-brand-red/10"
+          className="btn-ghost h-11 w-11 border-brand-red/30 p-0 text-brand-red hover:bg-brand-red/10"
           aria-label={t('scanner.discardJob')} title={t('scanner.discardJob')}>
           <Trash2 size={17} />
         </button>
@@ -325,11 +329,12 @@ export default function ScanQueue() {
     refetchInterval: query => hasActiveScanJobs(query.state.data?.jobs || []) ? 3000 : false,
   })
 
-  const closeScans = () => navigate('/search')
+  // ✕ closes the queue for good: replace, so Back does not open it again
+  const closeScans = () => navigate('/search', { replace: true })
   const jobs = data?.jobs || []
   const retryNow = useRetryClock(jobs.some(job => Number(job.retrying || 0) > 0))
   return (
-    <Modal isOpen onClose={closeScans} title={t('scanner.queueTitle')} size="xl" isObscured={isNestedOpen}>
+    <Modal isOpen onClose={closeScans} title={t('scanner.queueTitle')} size="xl" isObscured={isNestedOpen} closeOnBack={false}>
       <div className="space-y-4 p-4 sm:p-5">
         {jobId ? (
           <JobDetail jobId={Number(jobId)} onObscuredChange={setIsNestedOpen} />
@@ -349,7 +354,7 @@ export default function ScanQueue() {
               </div>
             ) : (
               <div className="space-y-2">
-                {jobs.map(job => <JobRow key={job.id} job={job} onOpen={id => navigate(`/scans/${id}`)} retryNow={retryNow} t={t} />)}
+                {jobs.map(job => <JobRow key={job.id} job={job} onOpen={id => navigate(`/scans/${id}`, { state: { fromScanList: true } })} retryNow={retryNow} t={t} />)}
               </div>
             )}
           </>

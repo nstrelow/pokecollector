@@ -19,6 +19,8 @@ const DESKTOP_MEDIA_QUERY = '(min-width: 1024px)'
  *   className {string}    — extra classes for the inner panel
  *   overlayClassName {string} — stacking class for the backdrop (default: 'z-50')
  *   mobileSheet {boolean} — if true, renders as Sheet on mobile (default: true)
+ *   closeOnBack {boolean} — the phone's Back button closes it (default: true; false for a
+ *                           page that is shown as a modal, where Back is the router's)
  */
 export default function Modal({
   isOpen,
@@ -30,6 +32,7 @@ export default function Modal({
   overlayClassName = 'z-50',
   mobileSheet = true,
   isObscured = false,
+  closeOnBack = true,
 }) {
   const { t } = useSettings()
   const returnFocusRef = useRef(null)
@@ -87,7 +90,7 @@ export default function Modal({
   if (mobileSheet) {
     if (!isDesktop) {
       return (
-        <Sheet isOpen={isOpen} onClose={onClose} title={title} className={className} manageBodyScroll={false} restoreFocus={false} isObscured={isObscured}>
+        <Sheet isOpen={isOpen} onClose={onClose} title={title} className={className} manageBodyScroll={false} restoreFocus={false} isObscured={isObscured} closeOnBack={closeOnBack}>
           {children}
         </Sheet>
       )
@@ -104,6 +107,7 @@ export default function Modal({
         dialogLabel={t('common.dialog')}
         isObscured={isObscured}
         overlayClassName={overlayClassName}
+        closeOnBack={closeOnBack}
       >
         {children}
       </DesktopModal>
@@ -122,15 +126,16 @@ export default function Modal({
       dialogLabel={t('common.dialog')}
       isObscured={isObscured}
       overlayClassName={overlayClassName}
+      closeOnBack={closeOnBack}
     >
       {children}
     </DesktopModal>
   )
 }
 
-function DesktopModal({ isOpen, onClose, title, children, sizeClass, className = '', overlayClassName = 'z-50', closeLabel = 'Close', dialogLabel = 'Dialog', isObscured = false }) {
+function DesktopModal({ isOpen, onClose, title, children, sizeClass, className = '', overlayClassName = 'z-50', closeLabel = 'Close', dialogLabel = 'Dialog', isObscured = false, closeOnBack = true }) {
   const titleId = useId()
-  const { dialogRef, onDialogKeyDown } = useDialogBehavior(isOpen, onClose, { restoreFocus: false })
+  const { dialogRef, onDialogKeyDown } = useDialogBehavior(isOpen, onClose, { restoreFocus: false, closeOnBack })
   if (!isOpen) return null
 
   return createPortal(
@@ -162,11 +167,11 @@ function DesktopModal({ isOpen, onClose, title, children, sizeClass, className =
         >
           {/* Header */}
           {title && (
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border flex-shrink-0">
+            <div className="flex items-center justify-between px-5 py-2.5 border-b border-border flex-shrink-0">
               <h2 id={titleId} className="text-base font-semibold text-text-primary">{title}</h2>
               <button
                 onClick={onClose}
-                className="p-1.5 rounded-lg text-text-muted hover:text-text-primary hover:bg-bg-elevated transition-colors"
+                className="-mr-2 grid h-11 w-11 flex-shrink-0 place-items-center rounded-full text-text-muted hover:text-text-primary hover:bg-bg-elevated transition-colors"
                 aria-label={closeLabel}
               >
                 <X size={18} />
