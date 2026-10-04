@@ -170,11 +170,12 @@ Cloudflare fronts scan.nilss.dev and ignored `no-cache` on the live page's `.js`
 
 ## Common operations
 
-**Current rollback (2026-10-04, from v24.1 `2adb928`):** `git -C /tank/pokescan/src checkout 9d26328`, then
-`ssh root@10.0.1.40 systemctl restart pokescanner`; bundle-v23 stays (its `hints_v22/` is ignored by 9d26328), no denils
-change. Check: full `/health` has no `similar_hints` / `auth_via` keys. The phone needs the bearer again
-(`/live?token=…`). One step further back: `checkout d43e4cc`, mp0 → `/tank/pokescan/bundle-v22`, denils `commit = "d43e4cc"`
-+ bundle comment, `nix run .#update-pokescanner`, `systemctl restart pokescanner`; health = d43e4cc / v22 / 3d0eb299dc48.
+**Current rollback (2026-10-04, from v24.2 `78dc0f0` + bundle-v24, back to v24.1 `2adb928` + bundle-v23):**
+`pct set 140 -mp0 /tank/pokescan/bundle-v23,mp=/var/lib/pokescanner/bundle,ro=1`, `git -C /tank/pokescan/src checkout 2adb928`,
+`pct reboot 140` (the mount change needs the restart); no denils change. Check: `curl -s http://10.0.1.40:8000/health | jq
+'{bundle_sha256,similar_hints}'` → `84df050d5e36` / 90; `/identify` has no `print_source` in `language`. One step further
+back (v24.1 → v24): `checkout 9d26328` + `systemctl restart pokescanner`, bundle-v23 as is (health has no `similar_hints`;
+the phone needs the bearer again).
 Note: `/tank/pokescan/src`'s `origin` remote still names the pre-move path `/srv/repos/pokescan`; fetch with
 `git -C /tank/pokescan/src fetch /srv/repos/PicaLens/scanner/pokescan master` (or fix the remote URL).
 
@@ -393,6 +394,20 @@ carry `Origin: https://scan.nilss.dev` (`POKESCANNER_SSO_ORIGINS`), else 403. A 
 on those routes (pokecollector, scripts). uvicorn's proxy headers are off. `/hint/*` has `/ref`'s auth. Smoke test
 (2026-10-04, from 10.0.0.1): with the header `auth_via: "sso"`, identify 200 / cross-origin 403; without it or as another
 user 401. Public without a cookie: every path 302 to auth.nilss.dev.
+
+**v24.2 — owner yes 2026-10-04 ~05:00** (`ux` with `picker` + `jareader`, PicaLens #30 / #7 / #6). pokescan master
+= `live` = `plan-a` = **`78dc0f0`** (`release-v24.2`). New bundle **`/tank/pokescan/bundle-v24`** (sha 161c5780d77a: bank
+`number_classical_v22g_jar5b`, `supported_sets_v22_picker.json`, sidecar `identity_prints_v22_picker.json`, `hints_v22/`;
+client towers identical to bundle-v23, so `bundle_version` stays v22 and the device model cache key does not change).
+bundle-v23 untouched. No denils / Authentik / OPNsense change: mp0 is hand-applied (`proxmox.mountPoints = [ ]` in
+`hosts/pokescanner.nix`), so the denils comments that still name bundle-v23 and the `commit` label (9d26328) are stale
+labels only. Gate 0/132 changed vs v24.1, negatives 0/134, device 0/132, hints PASS, wild 0/800.
+```
+git -C /tank/pokescan/src fetch /srv/repos/PicaLens/scanner/pokescan master && git -C /tank/pokescan/src checkout 78dc0f0
+pct set 140 -mp0 /tank/pokescan/bundle-v24,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140
+curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256,similar_hints}'   # 9d26328 (label) / v22 / 161c5780d77a / 90
+```
+**Rollback:** see "Current rollback" above (mp0 → bundle-v23, `checkout 2adb928`, `pct reboot 140`).
 
 **Change SSO scope** (which paths need login): edit the `ForwardAuth` flag on the
 `scan.nilss.dev` handles in `/conf/config.xml` (script pattern: python + `ET`, never sed on
