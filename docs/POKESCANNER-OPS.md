@@ -8,11 +8,12 @@ design in `docs/POKESCANNER-PLAN.md`.
 | Piece | Where | How it's managed | Repo |
 |---|---|---|---|
 | pokescanner service (`pokescan.serve`) | CT 140 `pokescanner`, 10.0.1.40:8000, NixOS, 8 cores / 3 GB (cores 4 -> 8 on 2026-09-29, ORT threads stay 4) | denils (`modules/aspects/features/pokescan-serve.nix`, `hosts/pokescanner.nix`), `nix run .#update-pokescanner` | `/root/denils` |
-| pokescan source the service runs | `/tank/pokescan/src` (git checkout of the trunk `master`; **51d2cbc since 2026-10-04**, v24.3 = v24.2 `78dc0f0` + `/live/bench`; rollback `78dc0f0`), bind-mounted ro at `/var/lib/pokescanner/src` (mp1) | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
+| pokescan source the service runs | `/tank/pokescan/src` (git checkout of the trunk `master`; **a93a3aa since 2026-10-12** (v28), before it `c1ed35f` (v24.4) since 2026-10-04; rollback `c1ed35f`), bind-mounted ro at `/var/lib/pokescanner/src` (mp1) | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
 | model bundle v12 | `/tank/pokescan/bundle-v12` (1.6 GB incl. `ref_thumbs_v12/`), ro at `/var/lib/pokescanner/bundle` | rebuilt with `scripts/export_serve_bundle.py --out <newdir>` from a pokescan worktree; new versions get a NEW dir, then change `bundleDir` in the nix file | pokescan |
 | model bundle v12p3 (historical) | `/tank/pokescan/bundle-v12p3` (1.98 GB: v12 + `client/` towers fp16 172.9 MB / fp32 345.1 MB / int8wo 87.8 MB + unet 0.6 MB; bundle sha 0fac0cf6b1b1) | CT 140 mp0 2026-09-29 evening → 2026-09-30, then the v14 rollback bundle (historical; current rollback: d43e4cc + bundle-v22); the page picks the tower per device (WebGPU+shader-f16 → fp16, WebGPU → fp32, else int8wo). Its rollback then was mp0 → bundle-v12p2 (+ `pct reboot 140`) | pokescan |
 | model bundle v14 (historical) | `/tank/pokescan/bundle-v14` (2.33 GB: gallery v14 = 79,421 prints incl. English Classic + fr/it/pt/es SV/ME refs, `names_v14.json`, `ref_thumbs_v14/` 79,397, `client/` towers byte-identical to v12p3; bundle sha b7b8e8532325) | CT 140 mp0 2026-09-30 → 2026-10-02 ~09:50, code pokescan `live` 15d4869 (denils 6ad3ab7); replaced by v18/v20/v22/v23 (see the deploy blocks below) | pokescan |
-| **model bundle v24 (current)** | `/tank/pokescan/bundle-v24` (gallery v22 + bank v22g_jar5b + twins v24 + `supported_sets_v22_picker.json`, sidecar `identity_prints_v22_picker.json`, `hints_v22/`; sha 161c5780d77a; client towers byte-identical to v23) | CT 140 **mp0 since 2026-10-04 12:51 Berlin**, code pokescan 51d2cbc (v24.3; denils 9932faf; q8 bench tower added to `client/`). Health = 51d2cbc / v22 / 161c5780d77a | pokescan |
+| **model bundle v28 (current)** | `/tank/pokescan/bundle-v28` (3.5 GB: gallery v28 = 121,520 prints + bank `v22g_jar5b_v28` + twins v28 + `supported_sets_v28_picker.json`, sidecars `names_v28.json`, `identity_prints_v28_picker.json`, `hints_v28/` (90 hints), `ref_thumbs_v28/` (121,536 files; the ORB re-rank READS them, pinned by `rerank_thumbs_v28.json`); sha f404e3469f70; client towers byte-identical to bundle-v24 incl. the bench q8b32 tower, hard-linked) | CT 140 **mp0 since 2026-10-12 19:16 Berlin**, code pokescan a93a3aa (v28; denils 9bb17b3). Health = a93a3aa / v28 / f404e3469f70 / similar_hints 90 | pokescan |
+| model bundle v24 (rollback for v28) | `/tank/pokescan/bundle-v24` (gallery v22 + bank v22g_jar5b + twins v24 + `supported_sets_v22_picker.json`, sidecar `identity_prints_v22_picker.json`, `hints_v22/`; sha 161c5780d77a; client towers byte-identical to v23) | CT 140 **mp0 since 2026-10-04 12:51 Berlin**, code pokescan 51d2cbc (v24.3; denils 9932faf; q8 bench tower added to `client/`). Health = 51d2cbc / v22 / 161c5780d77a | pokescan |
 | model bundle v23 (rollback) | `/tank/pokescan/bundle-v23` (gallery v22 + bank v22g + twins v24, sha 84df050d5e36, + `hints_v22/`) | CT 140 mp0 2026-10-02 → 2026-10-04 (v23, v24, v24.1); rollback for v24.2: mp0 → bundle-v23 + `checkout 2adb928` + `pct reboot 140` | pokescan |
 | model bundle v22 (rollback) | `/tank/pokescan/bundle-v22` (sha 3d0eb299dc48) | kept for rollback: `checkout d43e4cc`, mp0 → bundle-v22, denils `commit = "d43e4cc"` (see "Current rollback" below) | pokescan |
 | service secrets | denils `secrets/pokescanner-env.age` → `/run/agenix/pokescanner-env` (root 0400, read by systemd `EnvironmentFile`) | keys: `POKESCANNER_TOKEN` (API bearer, rotated 2026-10-04 `c5651ea`), `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (pokecollector user `pokescanner`) | denils |
@@ -179,7 +180,13 @@ Cloudflare fronts scan.nilss.dev and ignored `no-cache` on the live page's `.js`
 
 ## Common operations
 
-**Current rollback (2026-10-04, from v24.2 `78dc0f0` + bundle-v24, back to v24.1 `2adb928` + bundle-v23):**
+**Current rollback (2026-10-12, from v28 `a93a3aa` + bundle-v28, back to v24.4 `c1ed35f` + bundle-v24):**
+`pct set 140 -mp0 /tank/pokescan/bundle-v24,mp=/var/lib/pokescanner/bundle,ro=1`, `git -C /tank/pokescan/src checkout c1ed35f`,
+`pct reboot 140`; poll `/health` until `commit` reads `c1ed35f` (it reads `a93a3aa` until denils is reverted: new commit
+`commit = "c1ed35f"` + bundle-v24 comments, `nix run .#update-pokescanner`, `ssh root@10.0.1.40 systemctl restart pokescanner`).
+Check: `curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}'` → `c1ed35f` / `v22` / `161c5780d77a`.
+
+**Previous rollback (2026-10-04, from v24.2 `78dc0f0` + bundle-v24, back to v24.1 `2adb928` + bundle-v23):**
 `pct set 140 -mp0 /tank/pokescan/bundle-v23,mp=/var/lib/pokescanner/bundle,ro=1`, `git -C /tank/pokescan/src checkout 2adb928`,
 `pct reboot 140` (the mount change needs the restart). Optional: denils `commit = "2adb928"` + `update-pokescanner`
 + `systemctl restart pokescanner` so `/health.commit` stays truthful (since denils 5305914 it says 78dc0f0). Check: `curl -s http://10.0.1.40:8000/health | jq
@@ -424,6 +431,29 @@ Smoke test (2026-10-04): LAN bearer 401/401/200, `/bundle` 401; public paths 302
 with `X-Authentik-Username: nils`: `auth_via: "sso"`, `/identify` 200 with `print_source`, other / no Origin 403, `/hint`
 200 webp; other user / no header 401. `/live` serves the new `overlay.js` / `backstack.js`.
 **Rollback:** see "Current rollback" above (mp0 → bundle-v23, `checkout 2adb928`, `pct reboot 140`).
+
+**v28 — DEPLOYED 2026-10-12 19:16 Berlin (17:16 UTC)** as `a93a3aa` + bundle-v28, owner yes 2026-10-12 (gallery v28 + the ORB picker
+re-rank; first deploy since v24.4, so v25 and v27 went live with it). pokescan master = **`a93a3aa`** (docs follow-up `e8a130a`). New bundle
+**`/tank/pokescan/bundle-v28`** (sha f404e3469f70), built from the `bwtails` worktree with `export_serve_bundle.py` + the four `--client-*`
+files of bundle-v24, then three sidecars the exporter does not copy: `identity_prints_v28_picker.json` (`build_identity_prints.py`), `hints_v28/` (`build_similar_hints.py --hints data/hints_v28.json --catalog data/catalog_v28.sqlite --out /tank/pokescan/hints-v28-thumbs`; the 90 hints of v25, links identical) and `names_v28.json` (`build_names_subset.py`, exporter copies it), plus a hard link of the bench tower `client/clip_b16_224.q8b32.7578c6ec60a9.onnx` from bundle-v24. bundle-v24 / v25 untouched.
+`ref_thumbs_v28/` is a recognition input now: `rerank_thumbs_v28.json` pins 121,520 sha256; all matched on the copy
+(the check reads 2 GB of small files, ~50 min cold on the HDD pool; `ja_MC-017.webp` 12,510 B and `fr_sm10-191.webp` 28,608 B non-empty).
+Gates were not re-run for the deploy (gate run 5 PASS, negatives 0/134, wild sample 0 new saves); pytest serve/bundle/rerank/changelog green.
+```
+git -C /tank/pokescan/src fetch /srv/repos/PicaLens/scanner/pokescan gold-rerank && git -C /tank/pokescan/src checkout a93a3aa   # gold-rerank until master is fetched
+pct set 140 -mp0 /tank/pokescan/bundle-v28,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140
+curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256,similar_hints}'   # a93a3aa (after the denils sync) / v28 / f404e3469f70 / 90
+# denils 9bb17b3: commit = "a93a3aa", bundle-v28 comments; nix run .#update-pokescanner; ssh root@10.0.1.40 systemctl restart pokescanner  (CT 140 generation 47, 46 = rollback)
+pct exec 142 -- /run/current-system/sw/bin/systemctl restart picalens-hub.service          # hub restart on every deploy, ~20 s
+```
+Smoke test: local `pokescan.serve` on :8765 first (same bundle, own throwaway token), then live. The three wild photos that ended in `ERROR`
+in the first v28 sample (`ebay/co.uk/28a0830d8175edfc`, `11b7576bbfc2d3b7`, `9ff8534644d5bb77`) return 200 AMBIGUOUS pickers (live 1.6–2.3 s warm,
+7 s on the first request after a restart); two v27-IDENTIFIED photos (`ebay/com.au/a3a05b75b2d880ba` ja:BW6a-014, `ebay/es/5db64864339f9a17` ja:XY7-038)
+return the same print_id, IDENTIFIED (0.9–1.1 s). Wrong bearer 401, public `https://scan.nilss.dev/` 302 to auth. The re-rank has no `/health`
+field; a borderline photo's pre-selected print can differ between hosts in the 4th score decimal (`11b7…` local no pre-selection, live ja:M6a-035; both AMBIGUOUS).
+**Gotcha:** `nix run .#update-pokescanner` deploys the whole denils HEAD, and HEAD had an "Update deps" nixpkgs bump (774debe → f584496: glibc 2.42-84 → 100, every
+derivation rehashed; onnxruntime 1.24.4, numpy 2.4.4, opencv 4.13.0, python 3.13.15 unchanged in version). The service came back healthy and unchanged in output on the five test photos.
+**Rollback:** see "Current rollback" above (mp0 → bundle-v24, `checkout c1ed35f`, `pct reboot 140`).
 
 **denils label sync — 2026-10-04 ~15:00 Berlin** (owner yes 2026-10-04, PicaLens #4): denils `5305914` sets
 `commit = "78dc0f0"` in `pokescan-serve.nix` and names bundle-v24 in its comments and in the `pct set 140 -mp0`
