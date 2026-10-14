@@ -8,12 +8,13 @@ design in `docs/POKESCANNER-PLAN.md`.
 | Piece | Where | How it's managed | Repo |
 |---|---|---|---|
 | pokescanner service (`pokescan.serve`) | CT 140 `pokescanner`, 10.0.1.40:8000, NixOS, 8 cores / 3 GB (cores 4 -> 8 on 2026-09-29, ORT threads stay 4) | denils (`modules/aspects/features/pokescan-serve.nix`, `hosts/pokescanner.nix`), `nix run .#update-pokescanner` | `/root/denils` |
-| pokescan source the service runs | `/tank/pokescan/src` (git checkout of the trunk `master`; **712f08d since 2026-10-13** (v31), before it `0e02d53` (v30; carries v29) since 2026-10-13; rollback `0e02d53`), bind-mounted ro at `/var/lib/pokescanner/src` (mp1) | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
+| pokescan source the service runs | `/tank/pokescan/src` (git checkout of the trunk `master`; **926e1bc since 2026-10-14** (v32), before it `712f08d` (v31) since 2026-10-13, before it `0e02d53` (v30; carries v29) since 2026-10-13; rollback `712f08d`), bind-mounted ro at `/var/lib/pokescanner/src` (mp1) | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
 | model bundle v12 | `/tank/pokescan/bundle-v12` (1.6 GB incl. `ref_thumbs_v12/`), ro at `/var/lib/pokescanner/bundle` | rebuilt with `scripts/export_serve_bundle.py --out <newdir>` from a pokescan worktree; new versions get a NEW dir, then change `bundleDir` in the nix file | pokescan |
 | model bundle v12p3 (historical) | `/tank/pokescan/bundle-v12p3` (1.98 GB: v12 + `client/` towers fp16 172.9 MB / fp32 345.1 MB / int8wo 87.8 MB + unet 0.6 MB; bundle sha 0fac0cf6b1b1) | CT 140 mp0 2026-09-29 evening → 2026-09-30, then the v14 rollback bundle (historical; current rollback: d43e4cc + bundle-v22); the page picks the tower per device (WebGPU+shader-f16 → fp16, WebGPU → fp32, else int8wo). Its rollback then was mp0 → bundle-v12p2 (+ `pct reboot 140`) | pokescan |
 | model bundle v14 (historical) | `/tank/pokescan/bundle-v14` (2.33 GB: gallery v14 = 79,421 prints incl. English Classic + fr/it/pt/es SV/ME refs, `names_v14.json`, `ref_thumbs_v14/` 79,397, `client/` towers byte-identical to v12p3; bundle sha b7b8e8532325) | CT 140 mp0 2026-09-30 → 2026-10-02 ~09:50, code pokescan `live` 15d4869 (denils 6ad3ab7); replaced by v18/v20/v22/v23 (see the deploy blocks below) | pokescan |
-| **model bundle v31 (current)** | `/tank/pokescan/bundle-v31` (gallery v31 = 125,778 prints (+4,258 first fr/it/de references, all picker-only; m-4 Manaphy reinstated; Pt4-090 aux swap) + bank `v22g_jar5b_v30` + twins v31 + `supported_sets_v31_picker.json`, sidecars `names_v31.json`, `identity_prints_v31_picker.json`, `hints_v31/` (90 hints), `ref_thumbs_v31/` + `rerank_thumbs_v31.json`; sha 1e7b909a; client towers as bundle-v28) | CT 140 **mp0 since 2026-10-13 ~22:15 Berlin**, code pokescan 712f08d (v31; denils 416d459). Health = 712f08d / v31 / 1e7b909a / similar_hints 90 | pokescan |
-| **model bundle v30 (rollback for v31)** | `/tank/pokescan/bundle-v30` (gallery v30 = 121,520 prints (v29 DP-era aux swap, 369 second pictures; SM10b `/56` -> `/054` catalog fix) + bank `v22g_jar5b_v30` + twins v30 + `supported_sets_v30_picker.json`, sidecars `names_v30.json`, `identity_prints_v30_picker.json`, `hints_v30/` (90 hints), `ref_thumbs_v28/` reused (pinned by `rerank_thumbs_v28.json`); sha 5aa71553; client towers as bundle-v28) | CT 140 **mp0 since 2026-10-13 ~19:38 Berlin**, code pokescan 0e02d53 (v30; denils 82445d0). Health = 0e02d53 / v30 / 5aa71553 / similar_hints 90 | pokescan |
+| **model bundle v32 (current)** | `/tank/pokescan/bundle-v32` (gallery v32 = 126,198 prints (+420 first German PokéWiki / PokeZentrum 382, English SVP / HGSS18 9, Japanese M-P promo 29 references, all picker-only) + bank `v22g_jar5b_v30` + twins v32 + `supported_sets_v32_picker.json`, sidecars `names_v32.json`, `identity_prints_v32_picker.json`, `hints_v32/` (90 hints), `ref_thumbs_v32/` + `rerank_thumbs_v32.json`; sha 92e491ef; client towers as bundle-v28) | CT 140 **mp0 since 2026-10-14**, code pokescan 926e1bc (v32; denils "pokescan: v32 label 926e1bc", CT 140 generation 50). Health = 926e1bc / v32 / 92e491ef / similar_hints 90 | pokescan |
+| **model bundle v31 (rollback for v32)** | `/tank/pokescan/bundle-v31` (gallery v31 = 125,778 prints (+4,258 first fr/it/de references, all picker-only; m-4 Manaphy reinstated; Pt4-090 aux swap) + bank `v22g_jar5b_v30` + twins v31 + `supported_sets_v31_picker.json`, sidecars `names_v31.json`, `identity_prints_v31_picker.json`, `hints_v31/` (90 hints), `ref_thumbs_v31/` + `rerank_thumbs_v31.json`; sha 1e7b909a; client towers as bundle-v28) | CT 140 **mp0 2026-10-13 ~22:15 Berlin → 2026-10-14**, code pokescan 712f08d (v31; denils 416d459). Health = 712f08d / v31 / 1e7b909a / similar_hints 90 | pokescan |
+| **model bundle v30 (older rollback)** | `/tank/pokescan/bundle-v30` (gallery v30 = 121,520 prints (v29 DP-era aux swap, 369 second pictures; SM10b `/56` -> `/054` catalog fix) + bank `v22g_jar5b_v30` + twins v30 + `supported_sets_v30_picker.json`, sidecars `names_v30.json`, `identity_prints_v30_picker.json`, `hints_v30/` (90 hints), `ref_thumbs_v28/` reused (pinned by `rerank_thumbs_v28.json`); sha 5aa71553; client towers as bundle-v28) | CT 140 **mp0 since 2026-10-13 ~19:38 Berlin**, code pokescan 0e02d53 (v30; denils 82445d0). Health = 0e02d53 / v30 / 5aa71553 / similar_hints 90 | pokescan |
 | model bundle v28 (rollback for v30) | `/tank/pokescan/bundle-v28` (3.5 GB: gallery v28 = 121,520 prints + bank `v22g_jar5b_v28` + twins v28 + `supported_sets_v28_picker.json`, sidecars `names_v28.json`, `identity_prints_v28_picker.json`, `hints_v28/` (90 hints), `ref_thumbs_v28/` (121,536 files; the ORB re-rank READS them, pinned by `rerank_thumbs_v28.json`); sha f404e3469f70; client towers byte-identical to bundle-v24 incl. the bench q8b32 tower, hard-linked) | CT 140 **mp0 since 2026-10-12 19:16 Berlin**, code pokescan a93a3aa (v28; denils 9bb17b3). Health = a93a3aa / v28 / f404e3469f70 / similar_hints 90 | pokescan |
 | model bundle v24 (rollback for v28) | `/tank/pokescan/bundle-v24` (gallery v22 + bank v22g_jar5b + twins v24 + `supported_sets_v22_picker.json`, sidecar `identity_prints_v22_picker.json`, `hints_v22/`; sha 161c5780d77a; client towers byte-identical to v23) | CT 140 **mp0 since 2026-10-04 12:51 Berlin**, code pokescan 51d2cbc (v24.3; denils 9932faf; q8 bench tower added to `client/`). Health = 51d2cbc / v22 / 161c5780d77a | pokescan |
 | model bundle v23 (rollback) | `/tank/pokescan/bundle-v23` (gallery v22 + bank v22g + twins v24, sha 84df050d5e36, + `hints_v22/`) | CT 140 mp0 2026-10-02 → 2026-10-04 (v23, v24, v24.1); rollback for v24.2: mp0 → bundle-v23 + `checkout 2adb928` + `pct reboot 140` | pokescan |
@@ -182,7 +183,14 @@ Cloudflare fronts scan.nilss.dev and ignored `no-cache` on the live page's `.js`
 
 ## Common operations
 
-**Current rollback (2026-10-13, from v31 `712f08d` + bundle-v31, back to v30 `0e02d53` + bundle-v30):**
+**Current rollback (2026-10-14, from v32 `926e1bc` + bundle-v32, back to v31 `712f08d` + bundle-v31):**
+`pct set 140 -mp0 /tank/pokescan/bundle-v31,mp=/var/lib/pokescanner/bundle,ro=1`, `git -C /tank/pokescan/src checkout 712f08d`,
+`pct reboot 140`; poll `/health` until `commit` reads `712f08d` (it reads `926e1bc` until denils is reverted: new commit
+`commit = "712f08d"` + bundle-v31 comments, `nix run .#update-pokescanner`, `pct exec 140 -- /run/current-system/sw/bin/systemctl restart pokescanner`; restart twice if the label is stale).
+Or switch CT 140 back to NixOS generation 49 (= v31 with the deps bump).
+Check: `curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256}'` → `712f08d` / `v31` / `1e7b909a...`.
+
+**Previous rollback (2026-10-13, from v31 `712f08d` + bundle-v31, back to v30 `0e02d53` + bundle-v30):**
 `pct set 140 -mp0 /tank/pokescan/bundle-v30,mp=/var/lib/pokescanner/bundle,ro=1`, `git -C /tank/pokescan/src checkout 0e02d53`,
 `pct reboot 140`; poll `/health` until `commit` reads `0e02d53` (it reads `712f08d` until denils is reverted: new commit
 `commit = "0e02d53"` + bundle-v30 comments, `nix run .#update-pokescanner`, `pct exec 140 -- /run/current-system/sw/bin/systemctl restart pokescanner`).
@@ -491,8 +499,24 @@ curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256,
 ```
 Gotcha: `update-pokescanner` ran the first `git push` against a remote that was ahead (`aad1741`), so the commit had to be rebased and the dep bump deployed with it.
 Also: the first start after `update-pokescanner` still reported `commit` 0e02d53 until the explicit restart.
-Hub answers 200 on http://10.0.1.42:8900/. **Live identify check on the 5 v30 photos: NOT done by the deploying agent** (reading the scanner token was refused by the classifier); the owner/lead runs it.
+Hub answers 200 on http://10.0.1.42:8900/. **Live identify check on the 5 v30 photos: done after the deploy, 5/5 IDENTIFIED** (same five as v32's check).
 **Rollback:** see "Current rollback" above (mp0 → bundle-v30, `checkout 0e02d53`, `pct reboot 140`; or CT 140 generation 48).
+
+**v32 — DEPLOYED 2026-10-14** as `926e1bc` + bundle-v32, owner's explicit yes 2026-10-14. v32 = gallery v32: +420 first references (German PokéWiki / PokeZentrum 382, English SVP / HGSS18 9,
+Japanese M-P promo 29; all `picker_only`, tap-only); no recognition code change. pokescan master `926e1bc` (merge of v32 `53df4c8` into `d9a92a1`; worktree `merge32`, branch `merge-v32`).
+Serve copy **`/tank/pokescan/bundle-v32`** (sha 92e491ef).
+```
+git -C /tank/pokescan/src fetch <local pokescan checkout> master && git -C /tank/pokescan/src checkout --detach 926e1bc
+pct set 140 -mp0 /tank/pokescan/bundle-v32,mp=/var/lib/pokescanner/bundle,ro=1 && pct reboot 140
+# denils "pokescan: v32 label 926e1bc" (pushed to origin main on top of bed03b5 'Update deps'): commit = "926e1bc", bundle-v32 comments
+nix run .#update-pokescanner; pct exec 140 -- /run/current-system/sw/bin/systemctl restart pokescanner   # CT 140 generation 50, 49 = rollback (48 = v30, 47 = v28)
+pct exec 142 -- /run/current-system/sw/bin/systemctl restart picalens-hub
+curl -s http://10.0.1.40:8000/health | jq '{commit,bundle_version,bundle_sha256,similar_hints}'   # 926e1bc / v32 / 92e491ef... / 90
+```
+Gotcha: the first pokescanner restart after the nix switch still showed the old commit label (`712f08d`); a second restart fixed it.
+`/health`: ok, bundle_version v32, gallery_version 32, commit 926e1bc, similar_hints 90. Hub CT 142 restarted, answers 200.
+**Live identify check, 5/5 IDENTIFIED** on v32 and on v31 (v31's was done after its deploy): ja:SM10b-009, ja:SM10b-023, ja:PMCG6-054, en:sv09-082, ja:BW9-047.
+**Rollback:** see "Current rollback" above (mp0 → bundle-v31, `checkout 712f08d`, `pct reboot 140`; or CT 140 generation 49).
 
 **denils label sync — 2026-10-04 ~15:00 Berlin** (owner yes 2026-10-04, PicaLens #4): denils `5305914` sets
 `commit = "78dc0f0"` in `pokescan-serve.nix` and names bundle-v24 in its comments and in the `pct set 140 -mp0`
