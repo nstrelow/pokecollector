@@ -24,6 +24,13 @@ Read this first. Plan: `docs/POKESCANNER-PLAN.md`. Ops/runbook: `docs/POKESCANNE
   `pokecollector-backend:pre-ux`; stack source `/root/pokecollector-backups/stack-src-pre-ux-20261004-1009.tgz`
   (recipe: `docs/POKESCANNER-OPS.md`, "Collector UX deploy 2026-10-04").
 
+## Next / in progress (2026-10-15, branch `lorcana-csv`, not deployed)
+
+- **Lorcana dreamborn.ink CSV (PicaLens #47, B7):** pure module `backend/services/lorcana_dreamborn.py` + map
+  `backend/data/lorcana_dreamborn_map_v1.json` + CLI `backend/scripts/dreamborn_csv.py`; round trip of the 22-row
+  sample keeps every row (byte-equal), unmappable rows are kept and reported. Format sources, assumptions and what
+  waits for the hub `game` axis (E3, #62): `docs/DREAMBORN-CSV.md`. No DB change, no API/UI, nothing deployed.
+
 The sections below are dated snapshots (newest first) kept as history.
 
 ## History — state on 2026-09-29 ~01:00 (end of the overnight run; superseded by "Live now")
