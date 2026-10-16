@@ -237,7 +237,7 @@ class LorcanaApiTests(GameAxisBase):
         items = self.client.get("/api/lorcana/collection/").json()
         self.assertEqual(sorted((i["foil"], i["quantity"]) for i in items), [(False, 3), (True, 1)])
         stored = {(i.variant, i.game, i.lang) for i in self.db.query(CollectionItem).execution_options(game="*")}
-        self.assertEqual(stored, {("Normal", "lorcana", "en"), ("Holo", "lorcana", "en")})
+        self.assertEqual(stored, {("Normal", "lorcana", "en"), ("Foil", "lorcana", "en")})
 
     def test_foil_defaults_follow_the_card_and_an_explicit_choice_wins(self):
         enchanted = self.add(print_id="en:1-207").json()
@@ -293,6 +293,21 @@ class LorcanaApiTests(GameAxisBase):
         self.assertIsNone(self.client.get("/api/lorcana/prices/en:3-4a").json()["price"])
         self.assertEqual(self.client.get("/api/lorcana/prices/en:9-999").status_code, 422)
         self.assertEqual(self.client.get("/api/lorcana/status").json()["prices"]["newest"], "2026-10-16")
+
+    def test_every_api_price_block_says_usd(self):
+        write_price_file(self.tmp.name, "2026-10-16", {"en:1-1": {"usd": 0.13, "usd_foil": 0.75}})
+        import_price_file(self.lc, Path(self.tmp.name) / "lorcast_2026-10-16.json")
+        self.add(print_id="de:1-1")
+        self.add(print_id="en:3-4a")                                      # no price on file at all
+        items = {i["print_id"]: i for i in self.client.get("/api/lorcana/collection/").json()}
+        self.assertEqual(items["de:1-1"]["price"]["currency"], "USD")
+        self.assertEqual((items["de:1-1"]["price"]["inherited"], items["de:1-1"]["price"]["print_id"]), (True, "en:1-1"))
+        self.assertIsNone(items["en:3-4a"]["price"])
+        self.assertEqual({i["currency"] for i in items.values()}, {"USD"})   # also where there is no price yet
+        one = self.client.get("/api/lorcana/prices/de:1-1").json()
+        self.assertEqual((one["currency"], one["price"]["currency"]), ("USD", "USD"))
+        self.assertEqual(self.client.get("/api/lorcana/prices/en:3-4a").json()["currency"], "USD")
+        self.assertEqual(self.client.get("/api/lorcana/status").json()["prices"]["currency"], "USD")
 
     def post_csv(self, text, **params):
         return self.client.post("/api/lorcana/collection/import-dreamborn", params=params,
@@ -420,6 +435,81 @@ class LorcanaApiTests(GameAxisBase):
         self.assertEqual(dream.totals(parsed.entries), {("en:1-1", False): 3})
 
 
+class FoilVariantTests(GameAxisBase):
+    """Owner 2026-10-16: Lorcana foil is the variant "Foil". Pokemon keeps its four and never accepts it."""
+
+    def test_pokemon_contract_is_unchanged_and_rejects_foil(self):
+        from services.collection_variants import (CANONICAL_VARIANTS, COLLECTION_TABLE_VARIANTS, LORCANA_VARIANTS,
+                                                  CollectionVariant, normalize_collection_variant)
+        self.assertEqual(CANONICAL_VARIANTS, ("Normal", "Holo", "Reverse Holo", "First Edition"))
+        self.assertEqual(CollectionVariant.FOIL.value, "Foil")
+        self.assertEqual(COLLECTION_TABLE_VARIANTS, CANONICAL_VARIANTS + ("Foil",))
+        self.assertEqual(LORCANA_VARIANTS, ("Normal", "Foil"))
+        with self.assertRaises(ValueError) as cm:
+            normalize_collection_variant("Foil")
+        self.assertIn("Normal, Holo, Reverse Holo, First Edition", str(cm.exception))
+        self.assertNotIn("Foil", str(cm.exception))
+
+    def test_pokemon_api_refuses_foil_and_writes_nothing(self):
+        from api.collection import router as collection_router
+        from database import get_db
+        self.add_pokemon()
+        app = FastAPI()
+        app.include_router(collection_router, prefix="/api/collection")
+        app.dependency_overrides[get_db] = lambda: self.db
+        app.dependency_overrides[get_current_user] = lambda: self.user
+        with TestClient(app) as client:
+            r = client.post("/api/collection/", json={"card_id": "sv1-1_en", "variant": "Foil"})
+            bogus = client.post("/api/collection/", json={"card_id": "sv1-1_en", "variant": "Bogus"})
+            self.assertEqual(r.status_code, 422, r.text)
+            # the same answer as for any other bad value, and the text still lists only the four Pokemon variants
+            self.assertEqual(r.json()["detail"][0]["msg"], bogus.json()["detail"][0]["msg"])
+            self.assertNotIn("Foil", bogus.json()["detail"][0]["msg"])
+        self.assertEqual(self.db.query(CollectionItem).filter(CollectionItem.variant == "Foil").count(), 0)
+
+    def test_collection_table_takes_foil_other_tables_do_not(self):
+        from sqlalchemy.exc import IntegrityError
+        self.add_pokemon()
+        self.db.add(CollectionItem(card_id="sv1-1_en", user_id=self.user.id, quantity=1, lang="en", variant="Foil"))
+        self.db.commit()                                         # the model's check on `collection` has Foil
+        self.assertEqual(self.db.query(CollectionItem).filter(CollectionItem.variant == "Foil").count(), 1)
+        self.db.add(CollectionItem(card_id="sv1-1_en", user_id=self.user.id, quantity=1, lang="en", variant="Shiny"))
+        with self.assertRaises(IntegrityError):
+            self.db.commit()
+        self.db.rollback()
+        from models import COLLECTION_ITEM_VARIANT_CHECK, COLLECTION_VARIANT_CHECK
+        self.assertIn("'Foil'", COLLECTION_ITEM_VARIANT_CHECK)
+        self.assertNotIn("Foil", COLLECTION_VARIANT_CHECK)       # product_cards / ledger / trade items keep four
+
+    def test_startup_hardening_widens_old_triggers_and_is_idempotent(self):
+        from database import harden_collection_variant_constraints
+        eng = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
+        with eng.begin() as c:
+            c.execute(text("CREATE TABLE collection (id INTEGER PRIMARY KEY, variant TEXT NOT NULL DEFAULT 'Normal')"))
+            c.execute(text("CREATE TABLE product_cards (id INTEGER PRIMARY KEY, variant TEXT NOT NULL DEFAULT 'Normal')"))
+            c.execute(text("CREATE TABLE product_ledger_entries (id INTEGER PRIMARY KEY, variant TEXT)"))
+            c.execute(text("CREATE TABLE trade_items (id INTEGER PRIMARY KEY, variant TEXT)"))
+            for suffix, action in (("insert", "INSERT"), ("update", "UPDATE OF variant")):     # the pre-E3 four-value trigger
+                c.execute(text(f"""CREATE TRIGGER ck_collection_variant_{suffix} BEFORE {action} ON collection
+                    WHEN NEW.variant IS NULL OR NEW.variant NOT IN ('Normal','Holo','Reverse Holo','First Edition')
+                    BEGIN SELECT RAISE(ABORT, 'unsupported collection variant'); END"""))
+            c.execute(text("INSERT INTO collection(variant) VALUES ('Holo')"))
+        for _ in range(2):                                       # twice: idempotent
+            harden_collection_variant_constraints(eng)
+        with eng.begin() as c:
+            c.execute(text("INSERT INTO collection(variant) VALUES ('Foil')"))
+            c.execute(text("UPDATE collection SET variant='Foil' WHERE variant='Holo'"))
+        for table in ("product_cards", "trade_items", "product_ledger_entries"):
+            with self.assertRaises(Exception, msg=table):
+                with eng.begin() as c:
+                    c.execute(text(f"INSERT INTO {table}(variant) VALUES ('Foil')"))
+        with self.assertRaises(Exception):
+            with eng.begin() as c:
+                c.execute(text("INSERT INTO collection(variant) VALUES ('Shiny')"))
+        # an existing Foil row is valid for `collection`, so a later start does not stop on it
+        harden_collection_variant_constraints(eng)
+
+
 class PricesTests(GameAxisBase):
     def path(self, day, rows):
         return write_price_file(self.tmp.name, day, rows)
@@ -473,6 +563,49 @@ class PricesTests(GameAxisBase):
         de = price_for(lc, "de:1-207", False)                             # inherited twin keeps the rule
         self.assertEqual((de.amount, de.inherited, de.finish_fallback), (952.84, True, "foil"))
         lc.close()
+
+    def test_every_price_is_usd_and_carries_its_market(self):
+        lc = self.lorcana()
+        import_price_file(lc, self.path("2026-10-16", {"en:1-1": {"usd": 0.13, "usd_foil": None},
+                                                       "en:1-207": {"usd": None, "usd_foil": 952.84}}))
+        for pid, foil in (("en:1-1", False), ("de:1-1", False), ("fr:1-1", True), ("en:1-207", False),
+                          ("de:1-207", True)):
+            info = price_for(lc, pid, foil)
+            self.assertIsNotNone(info, (pid, foil))
+            d = info.as_dict()
+            self.assertEqual((d["currency"], d["market"]), ("USD", "US"), (pid, foil))
+        de = price_for(lc, "de:1-1", False).as_dict()             # the English print's dollar price, flagged in the data
+        self.assertEqual((de["amount"], de["currency"], de["inherited"], de["print_id"]), (0.13, "USD", True, "en:1-1"))
+        self.assertEqual(prices_status(lc)["currency"], "USD")
+        lc.close()
+
+    def test_import_is_idempotent_per_day_also_when_two_imports_race(self):
+        from sqlalchemy.exc import IntegrityError
+        lc = self.lorcana()
+        f = self.path("2026-10-16", {"en:1-1": {"usd": 0.13, "usd_foil": 0.75}})
+        real_commit, calls = lc.commit, []
+
+        def racing_commit():
+            calls.append(1)
+            if len(calls) == 1:                                   # the other import wins: its rows are in, ours are refused
+                other = self.lorcana()
+                import_price_file(other, f)
+                other.close()
+                raise IntegrityError("INSERT", {}, Exception("UNIQUE constraint failed: game_prices"))
+            return real_commit()
+
+        with patch.object(lc, "commit", racing_commit):
+            out = import_price_file(lc, f)
+        self.assertEqual(lc.query(GamePrice).count(), 2)          # one row per print, finish and day, never doubled
+        self.assertEqual((out["added"], out["already_there"]), (0, 2))
+        lc.close()
+
+    def test_indexes_fit_the_queries(self):
+        names = {i.name: [c.name for c in i.columns] for i in GamePrice.__table__.indexes}
+        self.assertEqual(names["ix_game_prices_lookup"], ["game", "print_id", "finish", "price_date"])    # newest price
+        self.assertEqual(names["ix_game_prices_day"], ["game", "source", "price_date"])                   # day set, status
+        uq = [c for c in GamePrice.__table__.constraints if getattr(c, "name", None) == "uq_game_prices_obs"]
+        self.assertEqual([c.name for c in uq[0].columns], ["game", "print_id", "source", "finish", "price_date"])
 
     def test_non_finite_prices_are_refused(self):
         lc = self.lorcana()
@@ -549,7 +682,7 @@ class MigrationListTests(unittest.TestCase):
         for s in game:
             head = " ".join(s.split())
             self.assertRegex(head, r"^(ALTER TABLE \w+ ADD COLUMN IF NOT EXISTS game VARCHAR NOT NULL DEFAULT 'pokemon'"
-                                   r"|CREATE TABLE IF NOT EXISTS game_prices \(.*|CREATE INDEX IF NOT EXISTS ix_game_prices_lookup .*)$")
+                                   r"|CREATE TABLE IF NOT EXISTS game_prices \(.*|CREATE INDEX IF NOT EXISTS ix_game_prices_(lookup|day) .*)$")
             self.assertNotRegex(head.upper(), r"\b(UPDATE|DELETE|DROP|TRUNCATE)\b")
         self.assertEqual(sorted(s.split()[2] for s in game if s.startswith("ALTER")),
                          ["cards", "collection", "scan_jobs", "sets"])

@@ -4,13 +4,16 @@ Source: `lorcast_<YYYY-MM-DD>.json` written by lorcascan `scripts/prices_lorcast
 `lorcascan-lorcast-prices` version 1 (lorcascan docs/PRICES.md): TCGplayer's market price in USD, passed through by
 Lorcast, per ENGLISH print, `usd` / `usd_foil` as numbers or null (null = no price for that finish, never 0).
 
-Storage: `game_prices` (models.GamePrice), append-only, one row per (game, print, source, finish, day). Importing the
-same file twice adds nothing. The hub never calls Lorcast; a file has to arrive in LORCANA_PRICES_DIR (see
+Storage: `game_prices` (models.GamePrice), append-only, one row per (game, print, source, finish, day): daily full rows
+are kept (owner 2026-10-16), about 2.5 million rows a year. Importing the same file twice adds nothing, also when two
+imports race (the unique key refuses the duplicate and the loser re-reads what is there). The hub never calls Lorcast; a file has to arrive in LORCANA_PRICES_DIR (see
 docs/DREAMBORN-CSV.md "Hub" and the E3 plan).
 
 Reading (`price_for`): the newest day on file for the print and finish.
-  * a de / fr / it print inherits its English twin's price (same rest id) and says so (`inherited: true`): TCGplayer
-    has no localised products, so that is an approximation and clients must label it ("~ English price");
+  * every price is USD (`currency: "USD"`, `market: "US"`; no conversion to EUR anywhere). A de / fr / it print shows
+    its English twin's USD price (same rest id): TCGplayer has no localised products. That is the owner's choice
+    (2026-10-16): the client shows it as a dollar amount ("$", a US flag), not as an approximation. `inherited: true`
+    and `print_id` (the English print the number belongs to) stay in the data for anybody who wants to say more;
   * foil-only prints (the catalog's variant_kind enchanted / iconic / epic) have `usd` null; only for those a NORMAL
     lookup returns the foil price with `finish_fallback: "foil"`. Any other print with a null normal price stays null
     (a normal card with no TCGplayer normal price must not be valued at its foil price).
@@ -25,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models import GamePrice
@@ -33,6 +37,7 @@ from services.lorcana_catalog import is_foil_only_print
 GAME = "lorcana"
 SOURCE = "lorcast"
 CURRENCY = "USD"
+MARKET = "US"                 # TCGplayer US, as passed through by Lorcast
 FORMAT = "lorcascan-lorcast-prices"
 FILE_RE = re.compile(r"^lorcast_(\d{4}-\d{2}-\d{2})\.json$")
 PRINT_RE = re.compile(r"^[a-z]{2}(-[a-z]{2,4})?:[^\s:]+$")
@@ -83,19 +88,27 @@ def import_price_file(db: Session, path: Path | str) -> dict:
     """Append one day's rows; rows that are already there are left alone. Returns counts."""
     path = Path(path)
     day, fetched_at, prices = read_price_file(path)
-    have = {
-        (pid, fin)
-        for pid, fin in db.query(GamePrice.print_id, GamePrice.finish).filter(
-            GamePrice.game == GAME, GamePrice.source == SOURCE, GamePrice.price_date == day)
-    }
-    new = []
-    for pid, row in sorted(prices.items()):
-        for fin, key in (("normal", "usd"), ("foil", "usd_foil")):
-            if (pid, fin) not in have:
-                new.append(GamePrice(game=GAME, print_id=pid, source=SOURCE, currency=CURRENCY, finish=fin,
-                                     amount=row[key], price_date=day, fetched_at=fetched_at, source_file=path.name))
-    db.add_all(new)
-    db.commit()
+    for attempt in (1, 2):
+        have = {
+            (pid, fin)
+            for pid, fin in db.query(GamePrice.print_id, GamePrice.finish).filter(
+                GamePrice.game == GAME, GamePrice.source == SOURCE, GamePrice.price_date == day)
+        }
+        new = []
+        for pid, row in sorted(prices.items()):
+            for fin, key in (("normal", "usd"), ("foil", "usd_foil")):
+                if (pid, fin) not in have:
+                    new.append(GamePrice(game=GAME, print_id=pid, source=SOURCE, currency=CURRENCY, finish=fin,
+                                         amount=row[key], price_date=day, fetched_at=fetched_at,
+                                         source_file=path.name))
+        db.add_all(new)
+        try:
+            db.commit()
+            break
+        except IntegrityError:
+            db.rollback()                 # another import of the same day won the race: re-read, add what is missing
+            if attempt == 2:
+                raise
     return {"file": path.name, "date": day.isoformat(), "prints": len(prices), "added": len(new),
             "already_there": len(prices) * 2 - len(new)}
 
@@ -111,8 +124,8 @@ class PriceInfo:
     finish_fallback: str | None = None
 
     def as_dict(self) -> dict:
-        return {"amount": self.amount, "currency": self.currency, "finish": self.finish, "date": self.date,
-                "source": SOURCE, "print_id": self.print_id, "inherited": self.inherited,
+        return {"amount": self.amount, "currency": self.currency, "market": MARKET, "finish": self.finish,
+                "date": self.date, "source": SOURCE, "print_id": self.print_id, "inherited": self.inherited,
                 "finish_fallback": self.finish_fallback}
 
 
@@ -148,5 +161,5 @@ def prices_status(db: Session) -> dict:
     newest = q[0]
     if isinstance(newest, str):
         newest = dt.date.fromisoformat(newest)
-    return {"newest": newest.isoformat() if newest else None, "days": q[1], "rows": q[2],
+    return {"currency": CURRENCY, "newest": newest.isoformat() if newest else None, "days": q[1], "rows": q[2],
             "age_days": (dt.datetime.now(dt.timezone.utc).date() - newest).days if newest else None}
