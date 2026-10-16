@@ -18,10 +18,12 @@ Foil is the user's choice at save time, never a scanner decision (plan section 0
 """
 from __future__ import annotations
 
+import csv
 import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
+from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -30,17 +32,37 @@ from database import SessionLocal
 from models import Card, CollectionItem, User
 from services import lorcana_dreamborn as dream
 from services.games import LORCANA, lorcana_enabled, scope_session
-from services.lorcana_catalog import UnknownPrint, card_id_for, ensure_lorcana_card, print_id_of
+from services.lorcana_catalog import (UnknownPrint, card_id_for, ensure_lorcana_card, is_foil_kind,
+                                      print_id_of)
 from services.lorcana_prices import price_for, prices_status
-
-router = APIRouter()
 
 FOIL, NORMAL = "Holo", "Normal"
 CONDITIONS = ("Mint", "NM", "LP", "MP", "HP")
 LANGS = ("en", "de", "fr", "it")
-FOIL_ONLY_KINDS = frozenset({"enchanted", "iconic", "epic"})
 IMPORT_MAX_BYTES = 1024 * 1024
+IMPORT_ENVELOPE_BYTES = 64 * 1024          # multipart framing allowed on top of the file itself
+MAX_QUANTITY = 999                         # the same cap as LorcanaAdd.quantity
 PRINT_PATTERN = r"^[a-z]{2}:[^\s:]+$"
+
+
+class _ImportRoute(APIRoute):
+    """Refuses an oversized upload on its Content-Length header before FastAPI reads (spools) the body. A client that
+    sends no Content-Length (chunked) is still stopped by the read limit in the handler."""
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def guarded(request: Request):
+            length = request.headers.get("content-length", "")
+            if length.isascii() and length.isdigit() and int(length) > IMPORT_MAX_BYTES + IMPORT_ENVELOPE_BYTES:
+                raise HTTPException(status_code=413, detail="CSV file is too large")
+            return await handler(request)
+
+        return guarded
+
+
+router = APIRouter()
+import_router = APIRouter(route_class=_ImportRoute)
 
 
 def get_lorcana_db():
@@ -59,14 +81,14 @@ def require_lorcana():
 
 class LorcanaAdd(BaseModel):
     print_id: str = Field(pattern=PRINT_PATTERN, max_length=80)
-    quantity: int = Field(default=1, ge=1, le=999)
+    quantity: int = Field(default=1, ge=1, le=MAX_QUANTITY)
     foil: Optional[bool] = None            # None: foil for foil-only cards (Enchanted, Epic, Iconic), else normal
     condition: str = "NM"
     purchase_price: Optional[float] = Field(default=None, ge=0)
 
 
 class LorcanaUpdate(BaseModel):
-    quantity: Optional[int] = Field(default=None, ge=1, le=999)
+    quantity: Optional[int] = Field(default=None, ge=1, le=MAX_QUANTITY)
     foil: Optional[bool] = None
     condition: Optional[str] = None
     purchase_price: Optional[float] = Field(default=None, ge=0)
@@ -86,7 +108,7 @@ def _resolve(print_id: str):
 
 
 def _is_foil_only(row) -> bool:
-    return row.variant_kind in FOIL_ONLY_KINDS
+    return is_foil_kind(row.variant_kind)
 
 
 def _group_query(db: Session, user_id: int, card_id: str, variant: str, condition: str, purchase_price):
@@ -118,9 +140,9 @@ def _add(db: Session, user_id: int, print_id: str, quantity: int, foil: Optional
 
 def _item_dict(db: Session, item: CollectionItem, prices: bool = True) -> dict:
     card = item.card
-    print_id = print_id_of(item.card_id)
+    print_id = print_id_of(item.card_id)           # None when the card row is gone (card_id was set NULL)
     foil = item.variant == FOIL
-    price = price_for(db, print_id, foil) if prices else None
+    price = price_for(db, print_id, foil) if prices and print_id else None
     return {
         "id": item.id, "print_id": print_id, "card_id": item.card_id, "name": card.name if card else None,
         "set_code": card.set_id if card else None, "number": card.number if card else None,
@@ -199,12 +221,15 @@ def delete_item(item_id: int, db: Session = Depends(get_lorcana_db),
 def _owned_by_finish(db: Session, user_id: int) -> dict[tuple[str, bool], int]:
     owned: dict[tuple[str, bool], int] = {}
     for i in db.query(CollectionItem).filter(CollectionItem.user_id == user_id):
-        key = (print_id_of(i.card_id), i.variant == FOIL)
+        pid = print_id_of(i.card_id)
+        if pid is None:                            # card row deleted: nothing to key it by, left out of the export
+            continue
+        key = (pid, i.variant == FOIL)
         owned[key] = owned.get(key, 0) + (i.quantity or 0)
     return owned
 
 
-@router.post("/collection/import-dreamborn")
+@import_router.post("/collection/import-dreamborn")
 async def import_dreamborn(
     file: UploadFile = File(...),
     lang: str = Query("en"),
@@ -225,6 +250,8 @@ async def import_dreamborn(
         raise HTTPException(status_code=422, detail="CSV file must be UTF-8 encoded") from exc
     except dream.DreambornFormatError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (csv.Error, ValueError) as exc:         # e.g. a field larger than the csv module's limit
+        raise HTTPException(status_code=422, detail=f"CSV file could not be read: {exc}") from exc
 
     owned = _owned_by_finish(db, current_user.id)
     plan, skipped_zero = [], 0
@@ -234,11 +261,18 @@ async def import_dreamborn(
             continue
         have = owned.get((pid, foil), 0)
         add = want if mode == "add" else max(want - have, 0)
-        plan.append({"print_id": pid, "foil": foil, "file_count": want, "have": have, "add": add,
-                     "note": "file count is lower than the collection; left as is" if mode == "fill" and want < have
-                     else None})
+        entry = {"print_id": pid, "foil": foil, "file_count": want, "have": have, "add": add,
+                 "note": "file count is lower than the collection; left as is" if mode == "fill" and want < have
+                 else None}
+        if not foil and is_foil_kind(card_id_for(pid)[2].variant_kind):
+            # kept as the file says (normal), never silently turned into foil; the client can show this
+            entry["foil_only_card"] = True
+        if want > MAX_QUANTITY or add > MAX_QUANTITY:
+            raise HTTPException(status_code=422, detail=f"{pid}: count {max(want, add)} is above {MAX_QUANTITY}")
+        plan.append(entry)
     result = {"mode": mode, "committed": False, "report": parsed.report(), "plan": plan, "skipped_zero": skipped_zero,
-              "would_add_copies": sum(p["add"] for p in plan)}
+              "would_add_copies": sum(p["add"] for p in plan),
+              "foil_only_as_normal": sum(1 for p in plan if p.get("foil_only_card"))}
     if commit:
         for p in plan:
             if p["add"]:
@@ -263,3 +297,6 @@ def get_price(print_id: str, foil: bool = Query(False), db: Session = Depends(ge
     _resolve(print_id)
     price = price_for(db, print_id, foil)
     return {"print_id": print_id, "foil": foil, "price": price.as_dict() if price else None}
+
+
+router.include_router(import_router)

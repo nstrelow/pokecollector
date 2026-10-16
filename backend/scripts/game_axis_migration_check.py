@@ -1,13 +1,23 @@
 """Rehearse the game-axis migration (E3, PicaLens #62) on a PostgreSQL copy. Never touches a live database.
 
     python scripts/game_axis_migration_check.py --old-tree BASELINE/backend --new-tree GAME-AXIS/backend \
-        --pg "postgresql://USER@127.0.0.1:PORT" --csv canonical.csv [--keep]
+        --pg "postgresql://USER@127.0.0.1:PORT" --csv canonical.csv [--keep]          # seeded stand-in
+    python scripts/game_axis_migration_check.py --old-tree DEPLOYED/backend --new-tree GAME-AXIS/backend \
+        --pg "postgresql://USER@127.0.0.1:PORT" --from-dump pokemon_tcg.dump [--pg-restore PATH] [--keep]   # live copy
+
+`--from-dump` is the live-copy rehearsal (the mandatory pre-deploy step of PicaLens docs/plans/E3-HUB-GAME-AXIS.md): the
+owner makes `docker exec pokemon-postgres pg_dump -U pokemon -Fc pokemon_tcg > X.dump` on CT 100, and this script, run on
+the host against a scratch PostgreSQL, restores it into gx_old (instead of seeding), then runs the same steps 2-7. Use
+a scratch server of the SAME major version as production (PG 18): pg_restore refuses an archive newer than itself.
+--old-tree must be the code that is deployed now (it makes the reference for the baseline's own startup fix-ups and is
+the "old code" of the rollback check). Nothing is written to the dump file; the scratch databases are dropped at the end.
 
 What it does, in two scratch databases on a server YOU started (use a throw-away cluster; it creates and drops
 databases named gx_old / gx_new):
 
- 1. gx_old: the baseline tree's own init_db() (the production schema path), seeded from a collection CSV
-    (pokemon-collection/canonical.csv, the pokemirror snapshot of the real collection) plus a few of every other kind.
+ 1. gx_old: either the baseline tree's own init_db() (the production schema path) seeded from a collection CSV
+    (pokemon-collection/canonical.csv, the pokemirror snapshot of the real collection) plus a few of every other kind,
+    or, with --from-dump, `pg_restore --no-owner --no-privileges --exit-on-error` of the live dump.
  2. fingerprint every table: row count + sha256 over the rows (all columns, ordered by primary key).
  3. gx_new = CREATE DATABASE ... TEMPLATE gx_old (stands in for the dump/restore copy of the live database).
  4. run the NEW tree's init_db() on gx_new (the same code path that runs on deploy).
@@ -37,9 +47,13 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--old-tree", required=True)
 ap.add_argument("--new-tree", required=True)
 ap.add_argument("--pg", required=True, help="server URL without database, e.g. postgresql://pokemon@127.0.0.1:55432")
-ap.add_argument("--csv", required=True)
+ap.add_argument("--csv", help="seed gx_old from this collection CSV (the stand-in mode)")
+ap.add_argument("--from-dump", metavar="FILE", help="restore this pg_dump -Fc file into gx_old instead of seeding it")
+ap.add_argument("--pg-restore", default="pg_restore", help="pg_restore binary (version >= the dump's and the server's)")
 ap.add_argument("--keep", action="store_true", help="do not drop gx_old / gx_new afterwards")
 args = ap.parse_args()
+if bool(args.csv) == bool(args.from_dump):
+    ap.error("give exactly one of --csv (seed a stand-in) or --from-dump (restore a pg_dump -Fc)")
 
 BASE = args.pg.rstrip("/")
 GAME_TABLES = ("cards", "sets", "collection", "scan_jobs")
@@ -158,9 +172,9 @@ LORCANA = textwrap.dedent('''
     from services.games import game_session
     from api.lorcana import _add
     with game_session(SessionLocal, "lorcana") as db:
-        _add(db, 1, "en:1-1", 4, None, "NM", None)
-        _add(db, 1, "en:1-207", 1, None, "NM", None)
-        _add(db, 2, "de:1-1", 2, True, "LP", 1.5)
+        _add(db, %(u1)d, "en:1-1", 4, None, "NM", None)
+        _add(db, %(u1)d, "en:1-207", 1, None, "NM", None)
+        _add(db, %(u2)d, "de:1-1", 2, True, "LP", 1.5)
         db.commit()
     print("lorcana rows added")
 ''')
@@ -186,7 +200,7 @@ OLD_CODE_USES = textwrap.dedent('''
     init_db()
     db = SessionLocal()
     n = db.query(M.CollectionItem).count()
-    db.add(M.CollectionItem(card_id=db.query(M.Card).first().id, user_id=1, quantity=1, condition="LP", variant="Normal",
+    db.add(M.CollectionItem(card_id=db.query(M.Card).first().id, user_id=db.query(M.User).order_by(M.User.id).first().id, quantity=1, condition="LP", variant="Normal",
                             lang="en", added_at=dt.datetime(2026, 10, 16)))
     db.commit()
     print("old code: collection rows before/after", n, db.query(M.CollectionItem).count())
@@ -205,15 +219,33 @@ c = conn("postgres")
 c.cursor().execute("CREATE DATABASE gx_old")
 c.close()
 
-# 1. baseline schema through the baseline code, seeded
-run_tree(args.old_tree, "gx_old", "import database; database.init_db()")
-print(run_tree(args.old_tree, "gx_old", SEED % {"csv": os.path.abspath(args.csv)}).strip())
+# 1. the "live" database: baseline schema through the baseline code, seeded, or a restored dump
+if args.from_dump:
+    dump = os.path.abspath(args.from_dump)
+    if not os.path.isfile(dump):
+        raise SystemExit(f"no such dump file: {dump}")
+    srv = conn("postgres")
+    print("scratch server version", srv.server_version, "restoring", dump)
+    srv.close()
+    r = subprocess.run([args.pg_restore, "--no-owner", "--no-privileges", "--exit-on-error", "-d", f"{BASE}/gx_old", dump],
+                       capture_output=True, text=True)
+    if r.returncode:
+        raise SystemExit(f"pg_restore failed (is the scratch server / pg_restore as new as the dump's PostgreSQL?):\n"
+                         f"{r.stderr[-2000:]}")
+else:
+    run_tree(args.old_tree, "gx_old", "import database; database.init_db()")
+    print(run_tree(args.old_tree, "gx_old", SEED % {"csv": os.path.abspath(args.csv)}).strip())
 old = conn("gx_old")
 fp_seed = fingerprint(old)
-check("game_prices" not in fp_seed, "baseline schema has no game_prices table yet")
+print("restored/seeded rows:", ", ".join(f"{t}={n}" for t, (n, _h) in sorted(fp_seed.items()) if n))
+check("game_prices" not in fp_seed, "the starting database has no game_prices table yet")
 cur = old.cursor()
 cur.execute("SELECT count(*) FROM information_schema.columns WHERE column_name='game' AND table_schema='public'")
-check(cur.fetchone()[0] == 0, "baseline schema has no game column anywhere")
+check(cur.fetchone()[0] == 0, "the starting database has no game column anywhere")
+cur.execute("SELECT id FROM users ORDER BY id LIMIT 2")
+uids = [r[0] for r in cur.fetchall()]
+check(bool(uids), "the starting database has at least one user", str(uids))
+U1, U2 = uids[0], uids[-1]
 rf_before = relfile(old, GAME_TABLES)
 old.close()
 
@@ -237,8 +269,8 @@ fp_new_old_cols = fingerprint(new, {t: {"game"} for t in GAME_TABLES})
 
 # 5. checks
 check(set(fp_old) <= set(fp_new_all), "every baseline table is still there", ", ".join(sorted(set(fp_new_all) - set(fp_old))) + " added")
-check(fp_old["binder_cards"] != fp_seed["binder_cards"] or fp_old["user_settings"] != fp_seed["user_settings"],
-      "(info) the baseline's own startup fix-ups are the reference, not the raw seed")
+changed = [t for t in fp_seed if t in fp_old and fp_old[t] != fp_seed[t]]
+print("INFO  tables the baseline's own startup fix-ups change (the reference, not the raw start):", changed or "none")
 check(all(fp_new_all[t][0] == fp_old[t][0] for t in fp_old), "row count of every baseline table unchanged",
       ", ".join(f"{t}={fp_old[t][0]}" for t in ("cards", "sets", "collection", "scan_jobs", "price_history")))
 bad = [t for t in fp_old if fp_new_old_cols[t] != fp_old[t]]
@@ -260,7 +292,7 @@ run_tree(args.new_tree, "gx_new", "import database; database.init_db()")
 check(fingerprint(new) == fp_new_all, "second init_db() changes nothing (idempotent)")
 
 # 6. Lorcana on the copy
-print(run_tree(args.new_tree, "gx_new", LORCANA, {"LORCANA_ENABLED": "1"}).strip())
+print(run_tree(args.new_tree, "gx_new", LORCANA % {"u1": U1, "u2": U2}, {"LORCANA_ENABLED": "1"}).strip())
 print(run_tree(args.new_tree, "gx_new", LORCANA_PRICES).strip())
 cur.execute("SELECT game, count(*) FROM cards GROUP BY 1 ORDER BY 1")
 check(cur.fetchall() == [("lorcana", 3), ("pokemon", fp_old["cards"][0])], "cards: 3 Lorcana + the Pokemon rows")
@@ -301,8 +333,12 @@ check(got.get("pokemon") == fp_old["collection"][0] + 1, "old code on the migrat
 # 7b. schema rollback: remove the Lorcana rows, the new columns and the new table
 cur.execute("SELECT count(*) FROM collection WHERE game='lorcana'")
 n_l = cur.fetchone()[0]
-cur.execute("DELETE FROM collection WHERE game='lorcana'")
-cur.execute("DELETE FROM cards WHERE game='lorcana'")
+# the exact SQL of docs/plans/E3-HUB-GAME-AXIS.md "Rollback": collection FIRST (collection.card_id is ON DELETE SET NULL,
+# deleting cards first would leave orphan rows with a NULL card_id that no later filter on card_id could find)
+for t in ("collection", "scan_jobs", "cards", "sets"):
+    cur.execute(f"DELETE FROM {t} WHERE game <> 'pokemon'")
+cur.execute("SELECT count(*) FROM collection WHERE card_id IS NULL AND game <> 'pokemon'")
+check(cur.fetchone()[0] == 0, "rollback SQL leaves no orphan Lorcana collection row")
 cur.execute("DELETE FROM collection WHERE id = (SELECT max(id) FROM collection)")     # the row the old-code test added
 for t in GAME_TABLES:
     cur.execute(f"ALTER TABLE {t} DROP COLUMN game")

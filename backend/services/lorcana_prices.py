@@ -11,13 +11,15 @@ docs/DREAMBORN-CSV.md "Hub" and the E3 plan).
 Reading (`price_for`): the newest day on file for the print and finish.
   * a de / fr / it print inherits its English twin's price (same rest id) and says so (`inherited: true`): TCGplayer
     has no localised products, so that is an approximation and clients must label it ("~ English price");
-  * foil-only cards (Enchanted, Epic, Iconic, most Special) have `usd` null; a NORMAL lookup then returns the foil
-    price with `finish_fallback: "foil"` instead of "no price" (lorcascan docs/PRICES.md).
+  * foil-only prints (the catalog's variant_kind enchanted / iconic / epic) have `usd` null; only for those a NORMAL
+    lookup returns the foil price with `finish_fallback: "foil"`. Any other print with a null normal price stays null
+    (a normal card with no TCGplayer normal price must not be valued at its foil price).
 """
 from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +28,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from models import GamePrice
+from services.lorcana_catalog import is_foil_only_print
 
 GAME = "lorcana"
 SOURCE = "lorcast"
@@ -68,7 +71,8 @@ def read_price_file(path: Path | str) -> tuple[dt.date, str | None, dict]:
         vals = {}
         for key in ("usd", "usd_foil"):
             v = row.get(key)
-            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0 or v != v):
+            if v is not None and (isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v)
+                                  or v < 0):
                 raise PriceFileError(f"{path.name}: {pid} {key}={v!r}")
             vals[key] = None if v is None else float(v)
         out[pid] = vals
@@ -128,7 +132,7 @@ def price_for(db: Session, print_id: str, foil: bool) -> PriceInfo | None:
         row = _latest(db, pid, "foil" if foil else "normal")
         if row is None:
             continue
-        if row.amount is None and not foil:
+        if row.amount is None and not foil and is_foil_only_print(pid):
             alt = _latest(db, pid, "foil")
             if alt is not None and alt.amount is not None:
                 return PriceInfo(alt.amount, CURRENCY, "foil", alt.price_date.isoformat(), pid, pid != print_id,

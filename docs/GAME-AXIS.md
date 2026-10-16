@@ -12,3 +12,42 @@ Short version. The map, the reasoning, deploy steps and rollback live in PicaLen
 * Checks: `backend/tests/test_game_axis.py` (unit), `backend/scripts/api_snapshot.py` (Pokemon API byte-diff between two
   trees, optionally with Lorcana data present), `backend/scripts/game_axis_migration_check.py` (migration, idempotence,
   rollback on a throw-away PostgreSQL copy).
+
+## Live-copy rehearsal (mandatory before the deploy)
+
+`python backend/scripts/game_axis_migration_check.py --old-tree <deployed>/backend --new-tree <this>/backend --pg postgresql://pokemon@127.0.0.1:PORT --from-dump FILE.dump --pg-restore <pg_restore of the production major version>`
+
+The owner makes the dump on CT 100 (`docker exec pokemon-postgres pg_dump -U pokemon -Fc pokemon_tcg > FILE.dump`); the
+script restores it into a scratch PostgreSQL (use PG 18 like production), fingerprints it, runs the new `init_db`,
+re-checks counts, `game='pokemon'` everywhere, old columns byte-identical, runs the rollback SQL and compares the final
+fingerprint with the start. Deploy only on `ALL PASS`. Without `--from-dump`, `--csv canonical.csv` seeds a stand-in.
+
+## Rollback (exact order)
+
+1. While the new code is still up, export each user's Lorcana collection: `GET /api/lorcana/collection/export-dreamborn`.
+2. Stop the backend, then delete the Lorcana rows, `collection` BEFORE `cards` (`collection.card_id` is
+   `ON DELETE SET NULL`; deleting cards first leaves orphan rows with a NULL `card_id`):
+   ```
+   BEGIN;
+   DELETE FROM collection WHERE game <> 'pokemon';
+   DELETE FROM scan_jobs  WHERE game <> 'pokemon';
+   DELETE FROM cards      WHERE game <> 'pokemon';
+   DELETE FROM sets       WHERE game <> 'pokemon';
+   COMMIT;
+   ```
+3. Start the previous image. (Optional: `ALTER TABLE <cards|sets|collection|scan_jobs> DROP COLUMN game; DROP TABLE game_prices;`.)
+4. Only if data was damaged, with the backend stopped:
+   `pg_restore -U pokemon -d pokemon_tcg --clean --if-exists --no-owner --no-privileges --exit-on-error < pre-game-axis.dump`,
+   then `DROP TABLE IF EXISTS game_prices` (the old dump does not contain it, so `--clean` leaves it).
+
+A plain-SQL backup made before this deploy and restored through `/api/backup/restore` brings back tables without the
+`game` columns; every game-scoped query then fails until the backend restarts (v63 re-adds the columns at start).
+
+## Import and price rules (review round 1)
+
+* Dreamborn import: bad numbers (including `²` and other non-ASCII digits) are reported as unmapped rows, a `csv.Error` is
+  422, any count above 999 (per print and finish, or to add) is 422 for the whole file, an upload whose Content-Length is
+  above 1 MB + 64 KB is 413 before the body is read. A foil-only card listed as normal stays normal; the plan line has
+  `foil_only_card: true` and the result `foil_only_as_normal`.
+* Prices: the normal-to-foil fallback only applies to foil-only prints (enchanted, iconic, epic); `inf`/`nan` prices
+  are refused; a NULL `card_id` on a Lorcana row is listed without a print id and skipped in the export.
