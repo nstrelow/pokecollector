@@ -118,14 +118,14 @@ A real export has not been available; the first one the owner supplies should be
 
 It refuses to overwrite (append-only). To switch, change `DEFAULT_MAP_PATH` and keep `_v1` in the repo.
 
-## What waits for E3 (#62, hub `game` axis)
+## Wired into the hub (E3, PicaLens #62)
 
-The hub's collection is keyed to Pokémon `Card` rows (tcgdex ids, `CollectionItem`), with no `game` column and no
-Lorcana catalog, so there is no surface to plug into without a schema change (none made, no migration, nothing
-deployed). When E3 lands:
+Server side only, behind `LORCANA_ENABLED=1` (default off; the deployed app has no `/api/lorcana` route until G2, #72).
+Design, map of what lives where, deploy and rollback: PicaLens `docs/plans/E3-HUB-GAME-AXIS.md`; short version in `docs/GAME-AXIS.md`.
 
-1. a Lorcana collection store keyed by `print_id` + `foil` (+ count, condition) behind the `game` axis;
-2. `POST /api/lorcana/collection/import-dreamborn` (multipart, `parse_csv`, preview with `report()`, commit only the
-   mapped entries, return the unmapped rows to the user) and `GET .../export-dreamborn` (`export_csv`);
-3. UI: import dialog showing the unmapped list; export button next to the existing CSV export;
-4. load the map once at startup (`load_map()` is cached), decide how the hub gets newer maps (`_v2`) with the catalog.
+* `POST /api/lorcana/collection/import-dreamborn` (multipart `file`, `lang=en|de|fr|it`, `commit=false|true`, `mode=fill|add`):
+  `commit=false` (default) writes nothing and returns the report, the plan per print+finish and every unmapped row.
+  `fill` raises each print+finish up to the file's count and never lowers (re-importing the same file adds nothing);
+  `add` adds the file's counts. Count 0 rows are skipped, nothing is ever deleted. Unmapped rows are returned, never guessed.
+* `GET /api/lorcana/collection/export-dreamborn`: the user's Lorcana collection as a dreamborn CSV (languages folded).
+* Foil is stored as the existing variant `Holo` (foil) / `Normal`; the `foil` flag is the API's word for it.
