@@ -49,9 +49,12 @@ A plain-SQL backup made before this deploy and restored through `/api/backup/res
 
 ## Import and price rules (review round 1)
 
-* Dreamborn import: bad numbers (including `²` and other non-ASCII digits) are reported as unmapped rows, a `csv.Error` is
-  422, any count above 999 (per print and finish, or to add) is 422 for the whole file, an upload whose Content-Length is
-  above 1 MB + 64 KB is 413 before the body is read. A foil-only card listed as normal stays normal; the plan line has
+* Dreamborn import status codes: a bad cell (including `²` and other non-ASCII digits, a count of more than 9 digits) is
+  HTTP **200** with the row listed as unmapped and not written; **422** for a `csv.Error` (field above 128 KiB), an
+  unreadable header, an empty or non-UTF-8 file, an unknown `lang`, and any count above 999 (the file's count, the amount
+  to add, or the quantity a merged row would reach; the whole file is refused and nothing is written, preview included);
+  **413** for an upload above 1 MB (refused on Content-Length + 64 KB framing before the body is read). The 999 cap also
+  holds for POST and PUT merges into an existing row. A foil-only card listed as normal stays normal; the plan line has
   `foil_only_card: true` and the result `foil_only_as_normal`.
 * Prices: the normal-to-foil fallback only applies to foil-only prints (enchanted, iconic, epic); `inf`/`nan` prices
   are refused; a NULL `card_id` on a Lorcana row is listed without a print id and skipped in the export.
@@ -66,4 +69,6 @@ A plain-SQL backup made before this deploy and restored through `/api/backup/res
 * `game_prices` keeps daily full rows (about 2.5 million rows, 755 MB with indexes, a year; measured), idempotent per day,
   indexes `ix_game_prices_lookup` and `ix_game_prices_day`.
 * Price files come in through a read-only folder: compose volume `${LORCANA_PRICES_HOST_DIR:-./data/lorcana-prices}`;
-  on CT 100 `LORCANA_PRICES_HOST_DIR=/mnt/lorcana-prices` (Proxmox bind mount of lorcascan's `data/prices`).
+  on CT 100 `LORCANA_PRICES_HOST_DIR=/mnt/lorcana-prices` (Proxmox bind mount of lorcascan's `data/prices` as **`mp2`**:
+  CT 100's `mp0` and `mp1` are the live media mounts; re-check `pct config 100` right before `pct set`). Daily import via
+  cron at about 07:30 CT-local time (check `date` in the CT), see the plan doc section 4.4.

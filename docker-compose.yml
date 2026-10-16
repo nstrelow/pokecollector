@@ -82,7 +82,8 @@ services:
       - ./data/scan-uploads:/app/data/scan-uploads
       - ./data/scan-traces:/app/data/scan-traces
       # read-only folder of lorcascan's lorcast_<date>.json files; on CT 100 LORCANA_PRICES_HOST_DIR=/mnt/lorcana-prices
-      # (a Proxmox bind mount of the host's lorcascan/data/prices, see PicaLens docs/plans/E3-HUB-GAME-AXIS.md)
+      # (a Proxmox bind mount `-mp2` of the host's lorcascan/data/prices; mp0/mp1 are the live media mounts, never reuse
+      # them; see PicaLens docs/plans/E3-HUB-GAME-AXIS.md section 4.4)
       - ${LORCANA_PRICES_HOST_DIR:-./data/lorcana-prices}:/app/data/lorcana-prices:ro
     ports:
       - "${BACKEND_PORT:-8000}:8000"
