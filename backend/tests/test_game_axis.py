@@ -156,6 +156,7 @@ class CatalogTests(GameAxisBase):
         self.assertEqual(card_id_for("de:1-1")[0], "lorcana:1-1_de")
         self.assertEqual(print_id_of("lorcana:1-1_de"), "de:1-1")
         self.assertEqual(print_id_of("lorcana:1-P1-1_en"), "en:1-P1-1")
+        self.assertIsNone(print_id_of(None))                        # NULL card_id (card row deleted): no crash
         for bad in ("en:9-999", "it:1-1", "xx:1-1", "1-1"):          # it: has no print of 1-1 in the map
             with self.assertRaises(UnknownPrint):
                 card_id_for(bad)
@@ -333,6 +334,73 @@ class LorcanaApiTests(GameAxisBase):
         self.assertEqual(self.post_csv(big).status_code, 413)
         self.assertEqual(self.db.query(CollectionItem).execution_options(game="*").count(), 0)
 
+    def test_dreamborn_unicode_digits_and_csv_errors_are_422_not_500(self):
+        head = "Set Number,Card Number,Variant,Count\n"
+        for body in (head + "001,001,normal,\u00b2\n", head + "\u00b2,001,normal,1\n", head + "001,\u00b2,normal,1\n",
+                     head + "001,\u0661,normal,1\n", head + "001,001,normal," + "9" * 5000 + "\n"):
+            r = self.post_csv(body)
+            self.assertEqual(r.status_code, 200, body)                    # a bad cell is a reported unmapped row ...
+            self.assertEqual(r.json()["report"]["unmapped"], 1, body)
+            self.assertEqual(r.json()["plan"], [], body)                  # ... and never written
+        wide = "Name,Normal,Foil,Set,Card Number\nAriel,\u00b2,0,001,001\n"
+        self.assertEqual(self.post_csv(wide).json()["report"]["unmapped"], 1)
+        r = self.post_csv(head + "001,001,normal," + "1" * 200000 + "\n")      # one field above the csv module's limit
+        self.assertEqual(r.status_code, 422, r.text)
+        self.assertEqual(self.post_csv("a,b\n\"unterminated\n").status_code, 422)
+        self.assertEqual(self.db.query(CollectionItem).execution_options(game="*").count(), 0)
+
+    def test_dreamborn_count_above_999_is_422(self):
+        head = "Set Number,Card Number,Variant,Count\n"
+        self.assertEqual(self.post_csv(head + "001,001,normal,1000\n", commit="true").status_code, 422)
+        self.assertEqual(self.post_csv(head + "001,001,normal,600\n001,001,normal,600\n").status_code, 422)   # summed
+        ok = self.post_csv(head + "001,001,normal,999\n", commit="true")
+        self.assertEqual((ok.status_code, ok.json()["would_add_copies"]), (200, 999))
+        self.assertEqual(self.post_csv(head + "001,001,normal,1\n", commit="true", mode="add").status_code, 200)
+        self.assertEqual(self.db.query(CollectionItem).execution_options(game="*").count(), 1)
+
+    def test_dreamborn_oversize_is_refused_on_content_length_before_the_body_is_read(self):
+        reads = []
+        real = lorcana_api.UploadFile.read
+
+        async def spy(self_, *a, **k):
+            reads.append(1)
+            return await real(self_, *a, **k)
+
+        big = b"x" * (lorcana_api.IMPORT_MAX_BYTES + lorcana_api.IMPORT_ENVELOPE_BYTES + 10)
+        with patch.object(lorcana_api.UploadFile, "read", spy):
+            r = self.client.post("/api/lorcana/collection/import-dreamborn", files={"file": ("e.csv", big, "text/csv")})
+        self.assertEqual(r.status_code, 413)
+        self.assertEqual(reads, [])                                       # the handler never ran
+        near = b"Set Number,Card Number,Variant,Count\n" + b"001,001,normal,0\n" * 60000      # < 1 MB: still parsed
+        self.assertLess(len(near), lorcana_api.IMPORT_MAX_BYTES)
+        self.assertEqual(self.client.post("/api/lorcana/collection/import-dreamborn",
+                                          files={"file": ("e.csv", near, "text/csv")}).status_code, 200)
+        slightly = b"x" * (lorcana_api.IMPORT_MAX_BYTES + 1000)          # inside the framing allowance: the read limit
+        self.assertEqual(self.client.post("/api/lorcana/collection/import-dreamborn",
+                                          files={"file": ("e.csv", slightly, "text/csv")}).status_code, 413)
+
+    def test_dreamborn_foil_only_card_as_normal_is_kept_normal_and_flagged(self):
+        text = "Set Number,Card Number,Variant,Count\n001,207,normal,1\n001,001,normal,1\n"
+        done = self.post_csv(text, commit="true").json()
+        flags = {p["print_id"]: p.get("foil_only_card") for p in done["plan"]}
+        self.assertEqual(flags, {"en:1-1": None, "en:1-207": True})
+        self.assertEqual(done["foil_only_as_normal"], 1)
+        stored = {(i["print_id"], i["foil"]) for i in self.client.get("/api/lorcana/collection/").json()}
+        self.assertEqual(stored, {("en:1-1", False), ("en:1-207", False)})   # the file's word is kept, not rewritten
+
+    def test_null_card_id_does_not_break_list_or_export(self):
+        self.add(quantity=2)
+        orphan = CollectionItem(card_id=None, user_id=self.user.id, quantity=1, variant="Normal", lang="en",
+                                game="lorcana", condition="NM", added_at=datetime.datetime.utcnow())
+        self.db.add(orphan)
+        self.db.commit()
+        items = self.client.get("/api/lorcana/collection/")
+        self.assertEqual(items.status_code, 200, items.text)
+        self.assertEqual(sorted(i["print_id"] or "" for i in items.json()), ["", "en:1-1"])
+        self.assertEqual(self.client.get("/api/lorcana/collection/export-dreamborn").status_code, 200)
+        self.assertEqual(self.post_csv("Set Number,Card Number,Variant,Count\n001,001,normal,2\n").status_code, 200)
+
+
     def test_dreamborn_export_round_trips_the_collection(self):
         self.add(quantity=3)
         self.add(foil=True)
@@ -388,6 +456,34 @@ class PricesTests(GameAxisBase):
         self.assertIsNone(price_for(lc, "en:3-4a", False))               # no row at all
         de = price_for(lc, "de:1-207", True)
         self.assertEqual((de.amount, de.inherited, de.print_id), (952.84, True, "en:1-207"))
+        lc.close()
+
+    def test_foil_fallback_only_for_foil_only_prints(self):
+        lc = self.lorcana()
+        import_price_file(lc, self.path("2026-10-16", {
+            "en:1-207": {"usd": None, "usd_foil": 952.84},      # Enchanted: foil-only
+            "en:1-1": {"usd": None, "usd_foil": 0.75},          # a normal card whose normal price is missing
+        }))
+        enchanted = price_for(lc, "en:1-207", False)
+        self.assertEqual((enchanted.amount, enchanted.finish_fallback), (952.84, "foil"))
+        normal = price_for(lc, "en:1-1", False)
+        self.assertIsNone(normal.amount)                                  # not valued at the foil price
+        self.assertEqual((normal.finish, normal.finish_fallback), ("normal", None))
+        self.assertEqual(price_for(lc, "en:1-1", True).amount, 0.75)
+        de = price_for(lc, "de:1-207", False)                             # inherited twin keeps the rule
+        self.assertEqual((de.amount, de.inherited, de.finish_fallback), (952.84, True, "foil"))
+        lc.close()
+
+    def test_non_finite_prices_are_refused(self):
+        lc = self.lorcana()
+        d = Path(self.tmp.name)
+        for i, raw in enumerate(('Infinity', '-Infinity', 'NaN', '1e999')):
+            name = f"lorcast_2026-11-0{i + 1}.json"
+            (d / name).write_text('{"format": "lorcascan-lorcast-prices", "version": 1, "meta": {}, "prices": '
+                                  '{"en:1-1": {"usd": %s, "usd_foil": null}}}' % raw)
+            with self.assertRaises(PriceFileError, msg=raw):
+                import_price_file(lc, d / name)
+        self.assertEqual(lc.query(GamePrice).count(), 0)
         lc.close()
 
     def test_bad_files_are_refused_and_nothing_is_written(self):

@@ -16,6 +16,19 @@ from services.lorcana_dreamborn import DreambornMap, MapRow, load_map
 
 GAME = "lorcana"
 ID_PREFIX = "lorcana:"
+FOIL_ONLY_KINDS = frozenset({"enchanted", "iconic", "epic"})     # the map's variant_kind values with no non-foil print
+
+
+def is_foil_kind(variant_kind: str | None) -> bool:
+    return variant_kind in FOIL_ONLY_KINDS
+
+
+def is_foil_only_print(print_id: str, dmap: DreambornMap | None = None) -> bool:
+    """True when the catalog map says this print only exists as foil. An id the map does not know is not foil-only."""
+    try:
+        return is_foil_kind(card_id_for(print_id, dmap)[2].variant_kind)
+    except UnknownPrint:
+        return False
 
 
 class UnknownPrint(KeyError):
@@ -32,8 +45,10 @@ def card_id_for(print_id: str, dmap: DreambornMap | None = None) -> tuple[str, s
     return f"{ID_PREFIX}{row.rest_id}_{lang}", lang, row
 
 
-def print_id_of(card_id: str) -> str:
-    """`lorcana:1-1_de` -> `de:1-1`."""
+def print_id_of(card_id: str | None) -> str | None:
+    """`lorcana:1-1_de` -> `de:1-1`. None for a NULL card_id (the card row was deleted: ON DELETE SET NULL)."""
+    if card_id is None:
+        return None
     if not card_id.startswith(ID_PREFIX) or "_" not in card_id:
         raise ValueError(f"not a Lorcana card id: {card_id!r}")
     rest, _, lang = card_id[len(ID_PREFIX):].rpartition("_")
@@ -47,7 +62,7 @@ def card_values(card_id: str, lang: str, row: MapRow) -> dict:
         types=[ink for ink in row.ink.split("-") if ink] or None,
         supertype="Lorcana", subtypes=[row.variant_kind] if row.variant_kind != "normal" else None,
         lang=lang, game=GAME, is_custom=False, is_digital=False,
-        variants_normal=row.variant_kind not in ("enchanted", "iconic", "epic"), variants_holo=True,
+        variants_normal=not is_foil_kind(row.variant_kind), variants_holo=True,
         variants_reverse=False, variants_first_edition=False,
     )
 

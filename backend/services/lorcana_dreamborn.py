@@ -34,8 +34,14 @@ _REQUIRED_WIDE = ("name", "normal", "foil", "set", "card number")
 # Brausepaul/lorcana-app-importer. Other groups are written as "<n>/<group>" under the set they belong to.
 EXPORT_GROUP_AS_SET = frozenset({"C1"})
 
-_CARD_RE = re.compile(r"^(\d+)([A-Za-z]*)(?:/([A-Za-z0-9]+))?$")
-_SET_RE = re.compile(r"^[A-Za-z]+\d*$")
+_CARD_RE = re.compile(r"^(\d{1,9})([A-Za-z]*)(?:/([A-Za-z0-9]+))?$", re.ASCII)
+_SET_RE = re.compile(r"^[A-Za-z]+\d*$", re.ASCII)
+
+
+def _uint(s: str) -> int | None:
+    """A plain ASCII non-negative integer of at most 9 digits, else None. (`str.isdigit()` is True for '\u00b2' and
+    other superscripts and `int()` then raises; a 1 MB run of digits would also raise, so both are refused here.)"""
+    return int(s) if s.isascii() and s.isdigit() and len(s) <= 9 else None
 
 
 class DreambornFormatError(ValueError):
@@ -83,8 +89,8 @@ class DreambornMap:
     def resolve(self, set_token: str, card_token: str, name: str | None = None) -> tuple[MapRow | None, str | None]:
         """(row, None) on an exact unique match, else (None, reason)."""
         set_token, card_token = (set_token or "").strip(), (card_token or "").strip()
-        if set_token.isdigit():
-            set_code = str(int(set_token))
+        if _uint(set_token) is not None:
+            set_code = str(_uint(set_token))
         elif _SET_RE.match(set_token):
             set_code = set_token.upper()
         else:
@@ -216,7 +222,7 @@ def parse_csv(text: str, *, lang: str = "en", dmap: DreambornMap | None = None) 
         fmt, header, body, start = "long", first, rows[1:], 2
     elif all(k in low for k in _REQUIRED_WIDE) and "variant" not in low:
         fmt, header, body, start = "wide", first, rows[1:], 2
-    elif len(first) >= 4 and low[2] in ("normal", "foil") and low[3].isdigit():
+    elif len(first) >= 4 and low[2] in ("normal", "foil") and _uint(low[3]) is not None:
         fmt, header, body, start = "long", None, rows, 1       # header-less paste
     else:
         raise DreambornFormatError(
@@ -254,7 +260,7 @@ def _long_entry(dmap, lang, get, raw, cells, n) -> DreambornEntry:
     variant = get("variant").lower()
     foil = {"normal": False, "foil": True}.get(variant)
     cnt = get("count")
-    count = int(cnt) if cnt.isdigit() else None
+    count = _uint(cnt)
     problem = None
     if foil is None:
         problem = f"unknown variant {get('variant')!r}"
@@ -274,7 +280,7 @@ def _wide_entries(dmap, lang, get, raw, n) -> list[DreambornEntry]:
     out = []
     for key, foil in (("normal", False), ("foil", True)):
         v = get(key)
-        count = int(v) if v.isdigit() else (0 if v == "" else None)
+        count = _uint(v) if v else 0
         if count is None:
             out.append(DreambornEntry(None, None, foil, raw, n, f"bad {key} count {v!r}"))
         elif count > 0:
