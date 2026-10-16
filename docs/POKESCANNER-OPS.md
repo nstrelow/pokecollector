@@ -518,6 +518,20 @@ Gotcha: the first pokescanner restart after the nix switch still showed the old 
 **Live identify check, 5/5 IDENTIFIED** on v32 and on v31 (v31's was done after its deploy): ja:SM10b-009, ja:SM10b-023, ja:PMCG6-054, en:sv09-082, ja:BW9-047.
 **Rollback:** see "Current rollback" above (mp0 → bundle-v31, `checkout 712f08d`, `pct reboot 140`; or CT 140 generation 49).
 
+**cardcore move — DEPLOYED 2026-10-16** (owner yes, pokescan PicaLens#38 + #89; no behaviour change, byte-identical gate). pokescan master `1d64ea0` imports the shared core `cardcore`
+(private repo, pinned `25f3a4f`). CT 140 runs source checkouts, so cardcore is a fourth read-only checkout: `/tank/pokescan/cardcore` (clone of `scanner/cardcore`, `checkout --detach 25f3a4f`),
+CT 140 mp3, and denils `16dd6e0` appends `/var/lib/pokescanner/cardcore/src` to `PYTHONPATH` (service + ExecCondition) and to `RequiresMountsFor`. No new nix packages. **When the pin in pokescan `pyproject.toml` moves, move this checkout too.**
+```
+git clone /srv/repos/PicaLens/scanner/cardcore /tank/pokescan/cardcore && git -C /tank/pokescan/cardcore checkout --detach 25f3a4f
+pct set 140 -mp3 /tank/pokescan/cardcore,mp=/var/lib/pokescanner/cardcore,ro=1        # hot-added, no reboot needed
+nix run .#update-pokescanner                                                              # CT 140 generation 52, 51 = rollback
+git -C /tank/pokescan/src fetch <worktree cardcore-move> cardcore-move && git -C /tank/pokescan/src checkout --detach 1d64ea0
+pct exec 140 -- /run/current-system/sw/bin/systemctl restart pokescanner               # label was right after the first restart this time
+pct exec 142 -- /run/current-system/sw/bin/systemctl restart picalens-hub
+```
+Checked: `/health` ok / v32 / `1d64ea0` / `92e491ef` / 90; `import cardcore` in the service python gives `/var/lib/pokescanner/cardcore/src/cardcore/__init__.py` (torch not imported); `verify_static_dir.py` identical;
+5 smoke photos IDENTIFIED in a throwaway in-CT instance. **Rollback:** CT 140 generation 51 + `git -C /tank/pokescan/src checkout f306f45` (mp3 may stay).
+
 **denils label sync — 2026-10-04 ~15:00 Berlin** (owner yes 2026-10-04, PicaLens #4): denils `5305914` sets
 `commit = "78dc0f0"` in `pokescan-serve.nix` and names bundle-v24 in its comments and in the `pct set 140 -mp0`
 recreate recipe in `hosts/pokescanner.nix`. Before switching: `nixos-rebuild dry-activate` (build on builder, target
