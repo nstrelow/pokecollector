@@ -7,7 +7,8 @@ design in `docs/POKESCANNER-PLAN.md`.
 
 | Piece | Where | How it's managed | Repo |
 |---|---|---|---|
-| pokescanner service (`pokescan.serve`) | CT 140 `pokescanner`, 10.0.1.40:8000, NixOS, 8 cores / 3 GB (cores 4 -> 8 on 2026-09-29, ORT threads stay 4) | denils (`modules/aspects/features/pokescan-serve.nix`, `hosts/pokescanner.nix`), `nix run .#update-pokescanner` | `/root/denils` |
+| pokescanner service (`pokescan.serve`) | CT 140 `pokescanner`, 10.0.1.40:8000, NixOS, 8 cores / 5 GB (cores 4 -> 8 on 2026-09-29, ORT threads stay 4; memory 3072 -> 4096 on 2026-10-02, 4096 -> 5120 on 2026-10-17 for the second service) | denils (`modules/aspects/features/pokescan-serve.nix`, `hosts/pokescanner.nix`), `nix run .#update-pokescanner` | `/root/denils` |
+| lorcascanner service (`lorcascan.serve`, Lorcana) | CT 140, second unit next to pokescanner, **127.0.0.1:8001 only** since 2026-10-17 (E4 Phase 1, PicaLens#63); LAN bind + `scan.nilss.dev/lorcana/` route prepared, not applied (E4b, #104). Own user `lorcascanner`, `MemoryMax 2560M`, `OOMScoreAdjust 500`, token in agenix `lorcascanner-env` (`LORCASCAN_TOKEN`); bundle **mp4** `/tank/lorcascan/bundle-v5` (ro), source **mp5** `/tank/lorcascan/src` detached at `ac75d32` (ro), prices **mp6** (ro); cardcore is pokescanner's mp3 | denils (`modules/aspects/features/lorcascan-serve.nix`), `nix run .#update-pokescanner` (CT 140 generation **53**, rollback **52**); runbook lorcascan `docs/DEPLOY-CT140.md` | `/root/denils`, lorcascan |
 | pokescan source the service runs | `/tank/pokescan/src` (git checkout of the trunk `master`; **926e1bc since 2026-10-14** (v32), before it `712f08d` (v31) since 2026-10-13, before it `0e02d53` (v30; carries v29) since 2026-10-13; rollback `712f08d`), bind-mounted ro at `/var/lib/pokescanner/src` (mp1) | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
 | model bundle v12 | `/tank/pokescan/bundle-v12` (1.6 GB incl. `ref_thumbs_v12/`), ro at `/var/lib/pokescanner/bundle` | rebuilt with `scripts/export_serve_bundle.py --out <newdir>` from a pokescan worktree; new versions get a NEW dir, then change `bundleDir` in the nix file | pokescan |
 | model bundle v12p3 (historical) | `/tank/pokescan/bundle-v12p3` (1.98 GB: v12 + `client/` towers fp16 172.9 MB / fp32 345.1 MB / int8wo 87.8 MB + unet 0.6 MB; bundle sha 0fac0cf6b1b1) | CT 140 mp0 2026-09-29 evening → 2026-09-30, then the v14 rollback bundle (historical; current rollback: d43e4cc + bundle-v22); the page picks the tower per device (WebGPU+shader-f16 → fp16, WebGPU → fp32, else int8wo). Its rollback then was mp0 → bundle-v12p2 (+ `pct reboot 140`) | pokescan |
@@ -531,6 +532,28 @@ pct exec 142 -- /run/current-system/sw/bin/systemctl restart picalens-hub
 ```
 Checked: `/health` ok / v32 / `1d64ea0` / `92e491ef` / 90; `import cardcore` in the service python gives `/var/lib/pokescanner/cardcore/src/cardcore/__init__.py` (torch not imported); `verify_static_dir.py` identical;
 5 smoke photos IDENTIFIED in a throwaway in-CT instance. **Rollback:** CT 140 generation 51 + `git -C /tank/pokescan/src checkout f306f45` (mp3 may stay).
+
+**lorcascanner (Lorcana) — Phase 1 DEPLOYED 2026-10-17** (owner yes, PicaLens#63 E4; denils `lorcascanner` branch merged at `7877475`; loopback only). Second unit in CT 140, "two programs, one app":
+pokescanner keeps the page and the Pokémon API, lorcascanner is API only on 127.0.0.1:8001 (`/lorcana/` on the same origin later). CT 140 **generation 53, rollback 52**
+(`ssh root@10.0.1.40 /nix/var/nix/profiles/system-52-link/bin/switch-to-configuration switch`); `pokescanner.service/.path` evaluated to the same store paths, so pokescanner was not restarted.
+```
+mkdir -p /tank/lorcascan && rsync -a /mnt/landing/lorcana-bundles/bundle-v5/ /tank/lorcascan/bundle-v5/        # hashes diffed, bundle.json 80e289ad...
+git clone /srv/repos/PicaLens/scanner/lorcascan /tank/lorcascan/src && git -C /tank/lorcascan/src checkout --detach ac75d32
+pct set 140 -mp4 /tank/lorcascan/bundle-v5,mp=/var/lib/lorcascanner/bundle,ro=1
+pct set 140 -mp5 /tank/lorcascan/src,mp=/var/lib/lorcascanner/src,ro=1
+pct set 140 -mp6 /srv/repos/PicaLens/scanner/lorcascan/data/prices,mp=/var/lib/lorcascanner/prices,ro=1
+pct set 140 -memory 5120                                                    # was 4096; whole-CT peak with both services about 4.0 GB
+nix run .#update-pokescanner                                                 # generation 53
+```
+Mount slots now: mp0 bundle-v32, mp1 src, mp2 cardapp, mp3 cardcore, **mp4 lorcascan bundle, mp5 lorcascan src, mp6 lorcascan prices**; mp7+ free. A new Lorcana bundle = new `/tank/lorcascan/bundle-vN`, repoint mp4,
+`systemctl restart lorcascanner` (pin `data/bundle_vN.sha256` must be in the checked-out src); a code fix = `git -C /tank/lorcascan/src checkout --detach <sha>` + restart + bump `commit` in the nix file.
+The service refuses to start without a token (`ExecStartPre`), `/health` must show `auth_required true` and an unauthenticated `/identify` must answer 401 (both are hard stops in the runbook).
+Safety run on CT 140's nix interpreter (onnxruntime 1.24.4 / opencv 4.13 / numpy 2.4 against the gate venvs' 1.31 / 5.0 / 2.5): full T9f **0 of 3,083** negatives IDENTIFIED, full gate PASS (every non-negotiable row 0);
+5 of 3,933 decisions differ, all at the margin edge, none in negatives. `config_sha256` / `decide_fingerprint` do not cover interpreter versions: re-gate after any nixpkgs bump of those three (`nix flake update` is one).
+**Not exposed:** no port in the CT firewall, no Caddy route. **Phase 2 (E4b, #104, prepared, not applied):** denils `lorcascan-lan` (bind `0.0.0.0`, 8001 from 10.0.0.1 and 10.0.1.1 only), OPNsense handle
+`handle_path /lorcana/*` -> 10.0.1.40:8001 with ForwardAuth=1 and no strip header, pokescan `lorcana-forwardauth` (`opnsense_forwardauth.py` keeps that handle SSO-only); steps and rollback in lorcascan
+`docs/DEPLOY-CT140.md` "Phase 2". Behind Caddy lorcascanner trusts `X-Authentik-Username: nils` from 10.0.0.1 exactly like pokescanner, so the page needs no bearer there.
+**Rollback (Lorcana only):** `pct exec 140 -- /run/current-system/sw/bin/systemctl disable --now lorcascanner`; or CT 140 generation 52.
 
 **denils label sync — 2026-10-04 ~15:00 Berlin** (owner yes 2026-10-04, PicaLens #4): denils `5305914` sets
 `commit = "78dc0f0"` in `pokescan-serve.nix` and names bundle-v24 in its comments and in the `pct set 140 -mp0`
