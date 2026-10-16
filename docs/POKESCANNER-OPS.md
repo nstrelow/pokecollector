@@ -553,7 +553,7 @@ Safety run on CT 140's nix interpreter (onnxruntime 1.24.4 / opencv 4.13 / numpy
 **Not exposed:** no port in the CT firewall, no Caddy route. **Phase 2 (E4b, #104, prepared, not applied):** denils `lorcascan-lan` (bind `0.0.0.0`, 8001 from 10.0.0.1 and 10.0.1.1 only), OPNsense handle
 `handle_path /lorcana/*` -> 10.0.1.40:8001 with ForwardAuth=1 and no strip header, pokescan `lorcana-forwardauth` (`opnsense_forwardauth.py` keeps that handle SSO-only); steps and rollback in lorcascan
 `docs/DEPLOY-CT140.md` "Phase 2". Behind Caddy lorcascanner trusts `X-Authentik-Username: nils` from 10.0.0.1 exactly like pokescanner, so the page needs no bearer there.
-**Rollback (Lorcana only):** `pct exec 140 -- /run/current-system/sw/bin/systemctl disable --now lorcascanner`; or CT 140 generation 52.
+**Rollback (Lorcana only):** `pct exec 140 -- /run/current-system/sw/bin/systemctl stop lorcascanner` (not `disable`: NixOS units live in the store; it starts again on reboot); lasting: CT 140 generation 52 plus `nix-env -p /nix/var/nix/profiles/system --switch-generation 52`.
 
 **denils label sync — 2026-10-04 ~15:00 Berlin** (owner yes 2026-10-04, PicaLens #4): denils `5305914` sets
 `commit = "78dc0f0"` in `pokescan-serve.nix` and names bundle-v24 in its comments and in the `pct set 140 -mp0`
