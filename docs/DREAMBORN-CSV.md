@@ -128,4 +128,5 @@ Design, map of what lives where, deploy and rollback: PicaLens `docs/plans/E3-HU
   `fill` raises each print+finish up to the file's count and never lowers (re-importing the same file adds nothing);
   `add` adds the file's counts. Count 0 rows are skipped, nothing is ever deleted. Unmapped rows are returned, never guessed.
 * `GET /api/lorcana/collection/export-dreamborn`: the user's Lorcana collection as a dreamborn CSV (languages folded).
-* Foil is stored as the existing variant `Holo` (foil) / `Normal`; the `foil` flag is the API's word for it.
+* Foil is stored as the variant `Foil` (owner decision 2026-10-16; a new value of the `collection` variant check, Pokemon
+  never accepts it) / `Normal`; the `foil` flag is the API's word for it.

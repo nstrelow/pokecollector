@@ -694,6 +694,7 @@ def _run_migrations(conn):
             CONSTRAINT uq_game_prices_obs UNIQUE (game, print_id, source, finish, price_date)
         )""",
         "CREATE INDEX IF NOT EXISTS ix_game_prices_lookup ON game_prices(game, print_id, finish, price_date)",
+        "CREATE INDEX IF NOT EXISTS ix_game_prices_day ON game_prices(game, source, price_date)",
     ]
     for stmt in migrations:
         try:
@@ -714,6 +715,13 @@ def harden_collection_variant_constraints(target_engine=None):
     """
     target_engine = target_engine or engine
     allowed_sql = "('Normal', 'Holo', 'Reverse Holo', 'First Edition')"
+    # E3 (PicaLens #62): the `collection` table alone also takes 'Foil' (Lorcana). Every other table keeps the four values,
+    # and no Pokemon code path accepts 'Foil' (services/collection_variants.py).
+    collection_allowed_sql = "('Normal', 'Holo', 'Reverse Holo', 'First Edition', 'Foil')"
+
+    def allowed_for(table_name):
+        return collection_allowed_sql if table_name == "collection" else allowed_sql
+
     with target_engine.begin() as conn:
         invalid = conn.execute(text(f"""
             SELECT source_table, row_id, variant
@@ -727,7 +735,8 @@ def harden_collection_variant_constraints(target_engine=None):
                 SELECT 'trade_items', id, variant, 1 FROM trade_items
             ) stored_variants
             WHERE (variant IS NULL AND nullable = 0)
-               OR (variant IS NOT NULL AND variant NOT IN {allowed_sql})
+               OR (variant IS NOT NULL AND source_table = 'collection' AND variant NOT IN {collection_allowed_sql})
+               OR (variant IS NOT NULL AND source_table <> 'collection' AND variant NOT IN {allowed_sql})
             ORDER BY source_table, row_id
             LIMIT 20
         """)).fetchall()
@@ -747,7 +756,11 @@ def harden_collection_variant_constraints(target_engine=None):
                 ("trade_items", True),
             )
             for table_name, nullable in constraints:
-                invalid_when = f"NEW.variant NOT IN {allowed_sql}"
+                invalid_when = f"NEW.variant NOT IN {allowed_for(table_name)}"
+                if table_name == "collection":
+                    # an older install has the four-value triggers: replace them so 'Foil' is accepted
+                    for suffix in ("insert", "update"):
+                        conn.execute(text(f"DROP TRIGGER IF EXISTS ck_{table_name}_variant_{suffix}"))
                 if nullable:
                     invalid_when = f"NEW.variant IS NOT NULL AND {invalid_when}"
                 else:
@@ -784,7 +797,7 @@ def harden_collection_variant_constraints(target_engine=None):
             ("trade_items", "ck_trade_items_variant", True),
         )
         for table_name, constraint_name, nullable in constraints:
-            expression = f"variant IN {allowed_sql}"
+            expression = f"variant IN {allowed_for(table_name)}"
             if nullable:
                 expression = f"variant IS NULL OR {expression}"
             conn.execute(text(f"""
@@ -800,6 +813,24 @@ def harden_collection_variant_constraints(target_engine=None):
                     END IF;
                 END$$
             """))
+            if table_name == "collection":
+                # E3 (v63): widen an existing four-value check to take 'Foil'. Idempotent: only a check that does not
+                # mention Foil yet is replaced; the audit above already proved every stored row is valid.
+                conn.execute(text(f"""
+                    DO $$
+                    BEGIN
+                        IF EXISTS (
+                            SELECT 1 FROM pg_constraint
+                            WHERE conname = '{constraint_name}'
+                              AND conrelid = '{table_name}'::regclass
+                              AND position('Foil' in pg_get_constraintdef(oid)) = 0
+                        ) THEN
+                            ALTER TABLE {table_name} DROP CONSTRAINT {constraint_name};
+                            ALTER TABLE {table_name}
+                                ADD CONSTRAINT {constraint_name} CHECK ({expression});
+                        END IF;
+                    END$$
+                """))
 
 
 def migrate_legacy_collection_binder_entries():

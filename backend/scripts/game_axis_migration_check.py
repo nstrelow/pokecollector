@@ -26,8 +26,11 @@ databases named gx_old / gx_new):
     unchanged (no table rewrite); a second init_db() changes nothing.
  6. Lorcana on the migrated copy: enable the flag, add rows through the API functions, check the Pokemon fingerprint of the
     old columns is still identical.
- 7. rollback: (a) old code on the migrated copy reads and writes Pokemon normally; (b) schema rollback (drop the four
-    columns and game_prices after removing Lorcana rows) gives back the exact fingerprint of step 2.
+ 7. rollback: (a) old code refuses to start while Lorcana 'Foil' rows exist (its startup audit); (b) the rollback SQL of the
+    plan doc, one transaction: Lorcana rows out (collection before cards), the collection variant check back to the four
+    Pokemon values (it must FAIL if a Foil row is left); (c) old code then runs on the copy, and the optional schema cleanup
+    (drop the four columns and game_prices) gives back the exact fingerprint of step 2, check definitions included.
+ The v63 step also widens the `collection` variant check to take 'Foil' (idempotent; other tables keep four values).
 Exit 0 only if every check passes. Prints one line per check.
 """
 from __future__ import annotations
@@ -37,6 +40,7 @@ import csv
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import textwrap
@@ -83,6 +87,33 @@ def run_tree(tree, db, code, extra_env=None):
     return r.stdout
 
 
+def jdefault(o):
+    """JSON fallback for the fingerprints. bytea comes back as a memoryview whose str() holds a memory address, which made
+    two identical rows hash differently (found on the first real dump: cards.image_phash / image_embedding, image_cache.data)."""
+    if isinstance(o, (bytes, bytearray, memoryview)):
+        return "bytes:" + hashlib.sha256(bytes(o)).hexdigest()
+    return str(o)
+
+
+def run_tree_rc(tree, db, code):
+    """Like run_tree, but returns (returncode, stdout, stderr) instead of stopping on a failure."""
+    env = {**os.environ, "DATABASE_URL": f"{BASE}/{db}", "JWT_SECRET_KEY": "migration-check-not-a-secret",
+           "PRE_UPGRADE_BACKUP_ENABLED": "false", "PYTHONDONTWRITEBYTECODE": "1"}
+    r = subprocess.run([sys.executable, "-c", f"import sys; sys.path.insert(0, {os.path.abspath(tree)!r}); {code}"],
+                       env=env, cwd=tree, capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
+def check_defs(c):
+    """{constraint: (allowed values, nullable)} of the variant checks (part of the schema the rollback must restore).
+    Compared by meaning, not by text: PostgreSQL prints the same check differently after a dump/restore or an ALTER."""
+    cur = c.cursor()
+    cur.execute("SELECT conrelid::regclass::text || '.' || conname, pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conname IN ('ck_collection_variant','ck_product_cards_variant','ck_product_ledger_variant',"
+                "'ck_trade_items_variant') ORDER BY 1")
+    return {name: (tuple(sorted(re.findall(r"'([^']+)'", d))), "IS NULL" in d) for name, d in cur.fetchall()}
+
+
 def tables(c):
     cur = c.cursor()
     cur.execute("SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY 1")
@@ -108,7 +139,7 @@ def fingerprint(c, skip_cols=None):
             continue
         sel = ", ".join(f'"{x}"' for x in cols)
         cur.execute(f'SELECT {sel} FROM "{t}"')
-        rows = sorted(json.dumps(r, default=str, sort_keys=True) for r in cur.fetchall())
+        rows = sorted(json.dumps(r, default=jdefault, sort_keys=True) for r in cur.fetchall())
         out[t] = (len(rows), hashlib.sha256("\n".join(rows).encode()).hexdigest())
     return out
 
@@ -246,6 +277,10 @@ cur.execute("SELECT id FROM users ORDER BY id LIMIT 2")
 uids = [r[0] for r in cur.fetchall()]
 check(bool(uids), "the starting database has at least one user", str(uids))
 U1, U2 = uids[0], uids[-1]
+defs_start = check_defs(old)
+check(defs_start.get("collection.ck_collection_variant", ((), 0))[0] == ("First Edition", "Holo", "Normal", "Reverse Holo"),
+      "the starting database's collection variant check has the four Pokemon values (no Foil yet)",
+      str(defs_start.get("collection.ck_collection_variant", "no such constraint")))
 rf_before = relfile(old, GAME_TABLES)
 old.close()
 
@@ -259,6 +294,8 @@ run_tree(args.old_tree, "gx_ref", "import database; database.init_db()")
 ref = conn("gx_ref")
 fp_old = fingerprint(ref)
 ref.close()
+if not args.keep:
+    drop("gx_ref")          # a real dump is big: do not hold three copies of it longer than needed
 
 # 4. migrate the copy with the new code
 run_tree(args.new_tree, "gx_new", "import database; database.init_db()")
@@ -284,12 +321,19 @@ for t in GAME_TABLES:
 cur.execute("SELECT count(*) FROM game_prices")
 check(cur.fetchone()[0] == 0, "game_prices exists and is empty")
 cur.execute("SELECT indexname FROM pg_indexes WHERE tablename='game_prices' ORDER BY 1")
-check([r[0] for r in cur.fetchall()] == ["game_prices_pkey", "ix_game_prices_lookup", "uq_game_prices_obs"],
-      "game_prices: primary key, unique observation key, lookup index")
+check([r[0] for r in cur.fetchall()] == ["game_prices_pkey", "ix_game_prices_day", "ix_game_prices_lookup", "uq_game_prices_obs"],
+      "game_prices: primary key, unique observation key, lookup index, per-day index")
 rf_after = relfile(new, GAME_TABLES)
 check(rf_before == rf_after, "cards/collection/sets/scan_jobs not rewritten (relfilenode unchanged)", str(rf_after))
 run_tree(args.new_tree, "gx_new", "import database; database.init_db()")
 check(fingerprint(new) == fp_new_all, "second init_db() changes nothing (idempotent)")
+
+defs_new = check_defs(new)
+check("Foil" in defs_new.get("collection.ck_collection_variant", ((), 0))[0], "collection variant check now takes Foil (v63 step)",
+      str(defs_new.get("collection.ck_collection_variant", "")))
+check({k: v for k, v in defs_new.items() if k != "collection.ck_collection_variant"} ==
+      {k: v for k, v in defs_start.items() if k != "collection.ck_collection_variant"},
+      "product_cards / ledger / trade_items variant checks unchanged (Foil is a `collection` value only)")
 
 # 6. Lorcana on the copy
 print(run_tree(args.new_tree, "gx_new", LORCANA % {"u1": U1, "u2": U2}, {"LORCANA_ENABLED": "1"}).strip())
@@ -298,8 +342,8 @@ cur.execute("SELECT game, count(*) FROM cards GROUP BY 1 ORDER BY 1")
 check(cur.fetchall() == [("lorcana", 3), ("pokemon", fp_old["cards"][0])], "cards: 3 Lorcana + the Pokemon rows")
 cur.execute("SELECT game, variant, count(*), sum(quantity) FROM collection GROUP BY 1,2 ORDER BY 1,2")
 rows = cur.fetchall()
-check([r for r in rows if r[0] == "lorcana"] == [("lorcana", "Holo", 2, 3), ("lorcana", "Normal", 1, 4)],
-      "collection: Lorcana foil/normal rows stored as Holo/Normal", str([r for r in rows if r[0] == "lorcana"]))
+check([r for r in rows if r[0] == "lorcana"] == [("lorcana", "Foil", 2, 3), ("lorcana", "Normal", 1, 4)],
+      "collection: Lorcana foil/normal rows stored as Foil/Normal", str([r for r in rows if r[0] == "lorcana"]))
 poke_where = {"cards": "game='pokemon'", "collection": "game='pokemon'"}
 snap_poke = {}
 for t, w in poke_where.items():
@@ -314,7 +358,7 @@ def pokemon_only_fp(c):
         cols = ", ".join(f'"{r[0]}"' for r in cu.fetchall())
         flt = " WHERE game='pokemon'" if t in GAME_TABLES else ""
         cu.execute(f'SELECT {cols} FROM "{t}"{flt}')
-        rs = sorted(json.dumps(r, default=str, sort_keys=True) for r in cu.fetchall())
+        rs = sorted(json.dumps(r, default=jdefault, sort_keys=True) for r in cu.fetchall())
         out[t] = (len(rs), hashlib.sha256("\n".join(rs).encode()).hexdigest())
     return out
 fp_pk_lorcana = pokemon_only_fp(new)
@@ -322,29 +366,55 @@ check(all(fp_pk_lorcana[t] == fp_old[t] for t in fp_pk_lorcana), "Pokemon rows (
 cur.execute("SELECT count(*) FROM game_prices")
 check(cur.fetchone()[0] == 4, "game_prices: 2 prints x 2 finishes imported once (second import added 0)")
 
-# 7a. old code on the migrated copy
-print(run_tree(args.old_tree, "gx_new", OLD_CODE_USES).strip())
-cur.execute("SELECT game, count(*) FROM collection GROUP BY 1 ORDER BY 1")
-got = dict(cur.fetchall())
-check(got.get("lorcana") == 3 and "old code" in "old code", "(info) old code does NOT scope by game: it lists the 3 Lorcana rows too, "
-      "so Lorcana rows must be exported (dreamborn CSV) and removed before a code rollback")
-check(got.get("pokemon") == fp_old["collection"][0] + 1, "old code on the migrated DB works; its new row gets game='pokemon' from the column default")
+# 7a. old code on the migrated copy WITH Lorcana rows present: its startup audit stops on the Foil variant (and, had it
+#     started, it does not scope by game). So the Lorcana rows must be exported and removed first.
+rc, _out, err = run_tree_rc(args.old_tree, "gx_new", OLD_CODE_USES)
+check(rc != 0 and "Unsupported stored collection variants" in err,
+      "(info) old code refuses to start while Lorcana 'Foil' rows exist: export them (dreamborn CSV) and delete them first")
 
-# 7b. schema rollback: remove the Lorcana rows, the new columns and the new table
+# 7b. the rollback SQL of docs/plans/E3-HUB-GAME-AXIS.md, exactly: collection FIRST (collection.card_id is ON DELETE SET
+#     NULL, deleting cards first would leave orphan rows with a NULL card_id that no filter on the id could still find),
+#     then the check goes back to four values. It is one transaction: a Foil row that is still there makes the ADD
+#     CONSTRAINT fail and nothing is changed.
 cur.execute("SELECT count(*) FROM collection WHERE game='lorcana'")
 n_l = cur.fetchone()[0]
-# the exact SQL of docs/plans/E3-HUB-GAME-AXIS.md "Rollback": collection FIRST (collection.card_id is ON DELETE SET NULL,
-# deleting cards first would leave orphan rows with a NULL card_id that no later filter on card_id could find)
+NARROW = ("ALTER TABLE collection DROP CONSTRAINT ck_collection_variant",
+          "ALTER TABLE collection ADD CONSTRAINT ck_collection_variant "
+          "CHECK (variant IN ('Normal', 'Holo', 'Reverse Holo', 'First Edition'))")
+cur.execute("BEGIN")
+failed = False
+try:
+    for st in NARROW:
+        cur.execute(st)
+except psycopg2.Error:
+    failed = True
+cur.execute("ROLLBACK")
+check(failed and "Foil" in check_defs(new)["collection.ck_collection_variant"][0],
+      "narrowing the check while Foil rows exist FAILS and changes nothing (no silent loss)")
+cur.execute("BEGIN")
 for t in ("collection", "scan_jobs", "cards", "sets"):
     cur.execute(f"DELETE FROM {t} WHERE game <> 'pokemon'")
+for st in NARROW:
+    cur.execute(st)
+cur.execute("COMMIT")
 cur.execute("SELECT count(*) FROM collection WHERE card_id IS NULL AND game <> 'pokemon'")
 check(cur.fetchone()[0] == 0, "rollback SQL leaves no orphan Lorcana collection row")
+cur.execute("SELECT count(*) FROM collection WHERE variant='Foil'")
+check(cur.fetchone()[0] == 0, "no Foil row is left after the rollback SQL")
+check(check_defs(new) == defs_start, "variant checks are back to the starting definitions")
+
+# 7c. old code on the rolled-back (columns still there) copy works; then the optional schema cleanup
+print(run_tree(args.old_tree, "gx_new", OLD_CODE_USES).strip())
+cur.execute("SELECT game, count(*) FROM collection GROUP BY 1 ORDER BY 1")
+check(dict(cur.fetchall()) == {"pokemon": fp_old["collection"][0] + 1},
+      "old code runs on the rolled-back DB; its new row gets game='pokemon' from the column default")
 cur.execute("DELETE FROM collection WHERE id = (SELECT max(id) FROM collection)")     # the row the old-code test added
 for t in GAME_TABLES:
     cur.execute(f"ALTER TABLE {t} DROP COLUMN game")
 cur.execute("DROP TABLE game_prices")
 fp_back = fingerprint(new)
 check(fp_back == fp_old, "after rollback every table fingerprint equals the pre-migration one", f"{n_l} Lorcana collection rows removed first")
+check(check_defs(new) == defs_start, "after rollback the variant check definitions equal the starting ones")
 new.close()
 
 if not args.keep:

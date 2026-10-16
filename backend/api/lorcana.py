@@ -14,7 +14,8 @@ scope), so a Pokemon row can never appear here and a Lorcana row can never appea
   GET    /prices/{print_id}?foil=      the current price of one print
 
 Foil is the user's choice at save time, never a scanner decision (plan section 0). It is stored as the existing
-`collection.variant` value "Holo" (foil) or "Normal"; the Pokemon variant check and pricing are untouched.
+`collection.variant` value "Foil" or "Normal" (owner decision 2026-10-16; Pokemon keeps its four variants and never
+accepts "Foil"); the Pokemon pricing is untouched.
 """
 from __future__ import annotations
 
@@ -34,9 +35,9 @@ from services import lorcana_dreamborn as dream
 from services.games import LORCANA, lorcana_enabled, scope_session
 from services.lorcana_catalog import (UnknownPrint, card_id_for, ensure_lorcana_card, is_foil_kind,
                                       print_id_of)
-from services.lorcana_prices import price_for, prices_status
+from services.lorcana_prices import CURRENCY, price_for, prices_status
 
-FOIL, NORMAL = "Holo", "Normal"
+FOIL, NORMAL = "Foil", "Normal"
 CONDITIONS = ("Mint", "NM", "LP", "MP", "HP")
 LANGS = ("en", "de", "fr", "it")
 IMPORT_MAX_BYTES = 1024 * 1024
@@ -151,6 +152,7 @@ def _item_dict(db: Session, item: CollectionItem, prices: bool = True) -> dict:
         "purchase_price": item.purchase_price,
         "added_at": item.added_at.isoformat() if item.added_at else None,
         "price": price.as_dict() if price else None,
+        "currency": CURRENCY,                      # prices are always USD, also when there is none yet
     }
 
 
@@ -296,7 +298,7 @@ def get_price(print_id: str, foil: bool = Query(False), db: Session = Depends(ge
               current_user: User = Depends(get_current_user), _on: None = Depends(require_lorcana)):
     _resolve(print_id)
     price = price_for(db, print_id, foil)
-    return {"print_id": print_id, "foil": foil, "price": price.as_dict() if price else None}
+    return {"print_id": print_id, "foil": foil, "currency": CURRENCY, "price": price.as_dict() if price else None}
 
 
 router.include_router(import_router)

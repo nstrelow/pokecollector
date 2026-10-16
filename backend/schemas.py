@@ -1,7 +1,7 @@
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any, Literal, Dict
 from datetime import datetime, date
-from services.collection_variants import CollectionVariant
+from services.collection_variants import PokemonVariant
 
 
 class SetBase(BaseModel):
@@ -155,7 +155,7 @@ class CollectionItemCreate(BaseModel):
     card_id: str
     quantity: int = Field(default=1, ge=1, le=999)
     condition: str = "NM"
-    variant: CollectionVariant = CollectionVariant.NORMAL
+    variant: PokemonVariant = PokemonVariant.NORMAL
     printing_details: List[str] = Field(default_factory=list, max_length=10)
     purchase_price: Optional[float] = None
     lang: str = "en"  # fixed TCGdex language of this card item
@@ -164,7 +164,7 @@ class CollectionItemCreate(BaseModel):
 class CollectionItemUpdate(BaseModel):
     quantity: Optional[int] = Field(default=None, ge=1, le=999)
     condition: Optional[str] = None
-    variant: Optional[CollectionVariant] = None
+    variant: Optional[PokemonVariant] = None
     printing_details: Optional[List[str]] = Field(default=None, max_length=10)
     purchase_price: Optional[float] = None
     lang: Optional[str] = None
@@ -199,7 +199,7 @@ class CollectionItemResponse(BaseModel):
     allocated_quantity: int = 0
     available_quantity: int = 0
     condition: str
-    variant: CollectionVariant = CollectionVariant.NORMAL
+    variant: PokemonVariant = PokemonVariant.NORMAL
     printing_details: List[PrintingDetailTagResponse] = Field(default_factory=list)
     purchase_price: Optional[float] = None
     lang: str = "en"
@@ -339,7 +339,7 @@ class DeckAllocatedPrintResponse(BaseModel):
     collection_item_id: int
     quantity: int
     condition: str
-    variant: CollectionVariant
+    variant: PokemonVariant
     lang: str
     printing_details: List[PrintingDetailTagResponse] = Field(default_factory=list)
 
@@ -517,7 +517,7 @@ class ProductLedgerEntryResponse(BaseModel):
     card_name: Optional[str] = None
     set_id: Optional[str] = None
     card_number: Optional[str] = None
-    variant: Optional[CollectionVariant] = None
+    variant: Optional[PokemonVariant] = None
     printing_details: List[str] = Field(default_factory=list)
     condition: Optional[str] = None
     lang: Optional[str] = None
@@ -538,7 +538,7 @@ class ProductCardResponse(BaseModel):
     active_quantity: int
     sold_quantity: int
     condition: Optional[str] = None
-    variant: CollectionVariant = CollectionVariant.NORMAL
+    variant: PokemonVariant = PokemonVariant.NORMAL
     printing_details: List[str] = Field(default_factory=list)
     lang: str = "en"
     purchase_price: Optional[float] = None
@@ -595,7 +595,7 @@ class TradeIncomingItemCreate(BaseModel):
     card_id: str
     quantity: int = Field(default=1, ge=1, le=999)
     condition: str = "NM"
-    variant: CollectionVariant = CollectionVariant.NORMAL
+    variant: PokemonVariant = PokemonVariant.NORMAL
     printing_details: List[str] = Field(default_factory=list, max_length=10)
     lang: str = "en"
     value_per_card: Optional[float] = Field(default=None, ge=0)
@@ -616,7 +616,7 @@ class TradeIncomingItemUpdate(BaseModel):
     card_id: Optional[str] = None
     quantity: int = Field(default=1, ge=1, le=999)
     condition: str = "NM"
-    variant: CollectionVariant = CollectionVariant.NORMAL
+    variant: PokemonVariant = PokemonVariant.NORMAL
     printing_details: Optional[List[str]] = Field(default=None, max_length=10)
     lang: str = "en"
     notes: Optional[str] = None
@@ -658,7 +658,7 @@ class TradeItemResponse(BaseModel):
     card_name: Optional[str] = None
     set_id: Optional[str] = None
     card_number: Optional[str] = None
-    variant: Optional[CollectionVariant] = None
+    variant: Optional[PokemonVariant] = None
     printing_details: List[str] = Field(default_factory=list)
     condition: Optional[str] = None
     lang: Optional[str] = None
@@ -687,7 +687,7 @@ class TradeResponse(BaseModel):
 
 class TradeValuationItem(BaseModel):
     card_id: str
-    variant: CollectionVariant = CollectionVariant.NORMAL
+    variant: PokemonVariant = PokemonVariant.NORMAL
     quantity: int = Field(default=1, ge=1, le=999)
 
 

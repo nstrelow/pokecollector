@@ -10,6 +10,9 @@ from database import Base
 POKEDEX_JSON = JSON(none_as_null=True).with_variant(JSONB(none_as_null=True), "postgresql")
 PORTFOLIO_CALCULATION_VERSION = 2
 COLLECTION_VARIANT_CHECK = "variant IN ('Normal', 'Holo', 'Reverse Holo', 'First Edition')"
+# The `collection` table alone also takes 'Foil' (Lorcana, E3 / PicaLens #62); product_cards, ledger and trade items
+# keep the four-value check above.
+COLLECTION_ITEM_VARIANT_CHECK = "variant IN ('Normal', 'Holo', 'Reverse Holo', 'First Edition', 'Foil')"
 
 
 class Set(Base):
@@ -249,7 +252,7 @@ class CollectionItem(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
     quantity = Column(Integer, default=1)
     condition = Column(String, default="NM")  # Mint/NM/LP/MP/HP
-    variant = Column(String, nullable=False, default="Normal")  # Normal/Holo/Reverse Holo/First Edition
+    variant = Column(String, nullable=False, default="Normal")  # Normal/Holo/Reverse Holo/First Edition; Foil = Lorcana only
     purchase_price = Column(Float)
     lang = Column(String, default="en")  # fixed TCGdex card language
     game = Column(String, nullable=False, default="pokemon", server_default=sql_text("'pokemon'"))  # game axis (E3, PicaLens #62)
@@ -265,7 +268,7 @@ class CollectionItem(Base):
     )
 
     __table_args__ = (
-        CheckConstraint(COLLECTION_VARIANT_CHECK, name="ck_collection_variant"),
+        CheckConstraint(COLLECTION_ITEM_VARIANT_CHECK, name="ck_collection_variant"),
     )
 
     @property
@@ -351,7 +354,8 @@ class GamePrice(Base):
 
     Pokemon keeps its prices in the `cards.price_*` columns and `price_history` (Cardmarket EUR, TCGplayer USD),
     unchanged. Every other game writes here: one row per (game, print, source, finish, day), never updated; the
-    newest `price_date` is the current price. Keyed by print id, not by `cards.id`, because a price exists before
+    newest `price_date` is the current price. Daily full rows are kept on purpose (owner 2026-10-16): about 3,000 English
+    prints x 2 finishes x 365 days = roughly 2.5 million rows a year. Keyed by print id, not by `cards.id`, because a price exists before
     anybody owns the card. A row is the source's number as published: `amount` NULL means the source has no price
     for that finish (never 0).
     """
@@ -371,6 +375,8 @@ class GamePrice(Base):
     __table_args__ = (
         UniqueConstraint("game", "print_id", "source", "finish", "price_date", name="uq_game_prices_obs"),
         Index("ix_game_prices_lookup", "game", "print_id", "finish", "price_date"),
+        # the per-day questions: "which rows of this day exist" (idempotent import) and the status line (newest day)
+        Index("ix_game_prices_day", "game", "source", "price_date"),
     )
 
 

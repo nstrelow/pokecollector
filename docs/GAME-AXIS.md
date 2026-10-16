@@ -6,7 +6,7 @@ Short version. The map, the reasoning, deploy steps and rollback live in PicaLen
   `database.py`, additive, no row is rewritten). New table `game_prices` (append-only, non-Pokemon prices).
 * Every ORM SELECT of those four models is scoped to one game (`models.py`, bottom). Default `pokemon`, so every
   existing endpoint, job and test sees what it saw before. A session opts in with `services.games.scope_session`.
-* `/api/lorcana/*` (`api/lorcana.py`) exists only with `LORCANA_ENABLED=1`: collection with a foil flag, dreamborn CSV
+* `/api/lorcana/*` (`api/lorcana.py`) exists only with `LORCANA_ENABLED=1`: collection with a foil flag (stored as the variant `Foil`; Pokemon uses `PokemonVariant`, four values, and never accepts it), dreamborn CSV
   import/export (`docs/DREAMBORN-CSV.md`), current price per print. Lorcana prices are imported from lorcascan's
   `lorcast_<date>.json` files: `python -m scripts.import_lorcast_prices` (`LORCANA_PRICES_DIR`).
 * Checks: `backend/tests/test_game_axis.py` (unit), `backend/scripts/api_snapshot.py` (Pokemon API byte-diff between two
@@ -33,8 +33,12 @@ fingerprint with the start. Deploy only on `ALL PASS`. Without `--from-dump`, `-
    DELETE FROM scan_jobs  WHERE game <> 'pokemon';
    DELETE FROM cards      WHERE game <> 'pokemon';
    DELETE FROM sets       WHERE game <> 'pokemon';
+   ALTER TABLE collection DROP CONSTRAINT ck_collection_variant;
+   ALTER TABLE collection ADD CONSTRAINT ck_collection_variant
+       CHECK (variant IN ('Normal', 'Holo', 'Reverse Holo', 'First Edition'));
    COMMIT;
    ```
+   (The `ADD CONSTRAINT` fails while a `Foil` row exists and the whole transaction rolls back.)
 3. Start the previous image. (Optional: `ALTER TABLE <cards|sets|collection|scan_jobs> DROP COLUMN game; DROP TABLE game_prices;`.)
 4. Only if data was damaged, with the backend stopped:
    `pg_restore -U pokemon -d pokemon_tcg --clean --if-exists --no-owner --no-privileges --exit-on-error < pre-game-axis.dump`,
@@ -51,3 +55,15 @@ A plain-SQL backup made before this deploy and restored through `/api/backup/res
   `foil_only_card: true` and the result `foil_only_as_normal`.
 * Prices: the normal-to-foil fallback only applies to foil-only prints (enchanted, iconic, epic); `inf`/`nan` prices
   are refused; a NULL `card_id` on a Lorcana row is listed without a print id and skipped in the export.
+
+## Owner decisions 2026-10-16
+
+* Foil is the variant `Foil`: in `CollectionVariant` and in the `collection` variant check only (widened idempotently at
+  startup by `harden_collection_variant_constraints`, part of v63). Rolling back narrows the check again, which fails
+  while a Foil row exists (see the rollback SQL; it now ends with the `DROP`/`ADD CONSTRAINT ck_collection_variant` pair).
+* de/fr/it prints show the English print's USD price: every price block has `currency: "USD"`, `market: "US"`,
+  `inherited` and `print_id` (the English print). No EUR conversion.
+* `game_prices` keeps daily full rows (about 2.5 million rows, 755 MB with indexes, a year; measured), idempotent per day,
+  indexes `ix_game_prices_lookup` and `ix_game_prices_day`.
+* Price files come in through a read-only folder: compose volume `${LORCANA_PRICES_HOST_DIR:-./data/lorcana-prices}`;
+  on CT 100 `LORCANA_PRICES_HOST_DIR=/mnt/lorcana-prices` (Proxmox bind mount of lorcascan's `data/prices`).
