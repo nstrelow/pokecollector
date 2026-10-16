@@ -349,6 +349,35 @@ class LorcanaApiTests(GameAxisBase):
         self.assertEqual(self.post_csv(big).status_code, 413)
         self.assertEqual(self.db.query(CollectionItem).execution_options(game="*").count(), 0)
 
+    def test_999_cap_also_holds_when_merging_into_an_existing_row(self):
+        self.assertEqual(self.add(quantity=900).status_code, 200)
+        over = self.add(quantity=100)                                    # 900 + 100 = 1000
+        self.assertEqual(over.status_code, 422, over.text)
+        self.assertIn("1000", over.json()["detail"])
+        self.assertEqual(self.add(quantity=99).json()["item"]["quantity"], 999)           # exactly 999 is fine
+        self.assertEqual(self.add(quantity=1).status_code, 422)
+        self.assertEqual([i["quantity"] for i in self.client.get("/api/lorcana/collection/").json()], [999])
+        # PUT that merges two rows into one above the cap
+        other = self.add(foil=True, quantity=5).json()["item"]
+        r = self.client.put(f"/api/lorcana/collection/{other['id']}", json={"foil": False})
+        self.assertEqual(r.status_code, 422, r.text)
+        self.assertEqual(sorted((i["foil"], i["quantity"]) for i in self.client.get("/api/lorcana/collection/").json()),
+                         [(False, 999), (True, 5)])
+
+    def test_dreamborn_add_mode_cap_refuses_the_whole_file_and_writes_nothing(self):
+        self.add(quantity=900)
+        self.add(print_id="en:1-205", quantity=1)
+        head = "Set Number,Card Number,Variant,Count\n"
+        text = head + "001,001,normal,100\n001,205,normal,1\n"       # first line would make 1000, second is fine alone
+        for params in ({"commit": "true", "mode": "add"}, {"mode": "add"}):          # the preview says 422 as well
+            r = self.post_csv(text, **params)
+            self.assertEqual(r.status_code, 422, r.text)
+        self.assertEqual(sorted((i["print_id"], i["quantity"]) for i in self.client.get("/api/lorcana/collection/").json()),
+                         [("en:1-1", 900), ("en:1-205", 1)])                # nothing of the file was applied
+        ok = self.post_csv(head + "001,001,normal,99\n", commit="true", mode="add")
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertEqual({i["print_id"]: i["quantity"] for i in self.client.get("/api/lorcana/collection/").json()}["en:1-1"], 999)
+
     def test_dreamborn_unicode_digits_and_csv_errors_are_422_not_500(self):
         head = "Set Number,Card Number,Variant,Count\n"
         for body in (head + "001,001,normal,\u00b2\n", head + "\u00b2,001,normal,1\n", head + "001,\u00b2,normal,1\n",
@@ -370,7 +399,9 @@ class LorcanaApiTests(GameAxisBase):
         self.assertEqual(self.post_csv(head + "001,001,normal,600\n001,001,normal,600\n").status_code, 422)   # summed
         ok = self.post_csv(head + "001,001,normal,999\n", commit="true")
         self.assertEqual((ok.status_code, ok.json()["would_add_copies"]), (200, 999))
-        self.assertEqual(self.post_csv(head + "001,001,normal,1\n", commit="true", mode="add").status_code, 200)
+        # 999 are stored now; adding one more in add mode would make 1000 in the merged row: 422, nothing changes
+        self.assertEqual(self.post_csv(head + "001,001,normal,1\n", commit="true", mode="add").status_code, 422)
+        self.assertEqual(self.post_csv(head + "001,001,normal,1\n", commit="true").status_code, 200)       # fill: nothing to add
         self.assertEqual(self.db.query(CollectionItem).execution_options(game="*").count(), 1)
 
     def test_dreamborn_oversize_is_refused_on_content_length_before_the_body_is_read(self):

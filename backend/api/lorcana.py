@@ -118,6 +118,13 @@ def _group_query(db: Session, user_id: int, card_id: str, variant: str, conditio
         CollectionItem.condition == condition, CollectionItem.purchase_price == purchase_price)
 
 
+def _cap(total: int, what: str) -> int:
+    """The 999 cap of LorcanaAdd.quantity also holds for a merged row: more than that is a 422, never stored."""
+    if total > MAX_QUANTITY:
+        raise HTTPException(status_code=422, detail=f"{what}: quantity {total} is above {MAX_QUANTITY}")
+    return total
+
+
 def _add(db: Session, user_id: int, print_id: str, quantity: int, foil: Optional[bool], condition: str,
          purchase_price) -> tuple[str, CollectionItem, dict]:
     card_id, lang, row = _resolve(print_id)
@@ -129,7 +136,7 @@ def _add(db: Session, user_id: int, print_id: str, quantity: int, foil: Optional
     variant = FOIL if foil else NORMAL
     existing = _group_query(db, user_id, card_id, variant, condition, purchase_price).first()
     if existing:
-        existing.quantity = (existing.quantity or 0) + quantity
+        existing.quantity = _cap((existing.quantity or 0) + quantity, print_id)
         return "updated", existing, notes
     item = CollectionItem(card_id=card_id, user_id=user_id, quantity=quantity, condition=condition, variant=variant,
                           purchase_price=purchase_price, lang=lang, game=LORCANA,
@@ -198,7 +205,7 @@ def update_item(item_id: int, body: LorcanaUpdate, db: Session = Depends(get_lor
     other = _group_query(db, current_user.id, item.card_id, variant, condition, price).filter(
         CollectionItem.id != item.id).first()
     if other is not None:            # the change makes this row identical to another one: merge, never duplicate
-        other.quantity = (other.quantity or 0) + quantity
+        other.quantity = _cap((other.quantity or 0) + quantity, print_id_of(item.card_id) or str(item.id))
         db.delete(item)
         item = other
     else:
@@ -271,6 +278,10 @@ async def import_dreamborn(
             entry["foil_only_card"] = True
         if want > MAX_QUANTITY or add > MAX_QUANTITY:
             raise HTTPException(status_code=422, detail=f"{pid}: count {max(want, add)} is above {MAX_QUANTITY}")
+        if add:                       # the row the commit would merge into (NM, no purchase price): same cap, checked
+            merge_into = _group_query(db, current_user.id, card_id_for(pid)[0], FOIL if foil else NORMAL, "NM", None).first()
+            if merge_into is not None:        # before anything is written, so a refused file changes nothing
+                _cap((merge_into.quantity or 0) + add, pid)
         plan.append(entry)
     result = {"mode": mode, "committed": False, "report": parsed.report(), "plan": plan, "skipped_zero": skipped_zero,
               "would_add_copies": sum(p["add"] for p in plan),
