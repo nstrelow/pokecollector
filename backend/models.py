@@ -3,7 +3,7 @@ from sqlalchemy import (
     CheckConstraint, ForeignKey, Text, JSON, UniqueConstraint, LargeBinary, Index, Table
 )
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text as sql_text
 from sqlalchemy.dialects.postgresql import JSONB
 from database import Base
 
@@ -28,6 +28,7 @@ class Set(Base):
     is_new = Column(Boolean, default=False)
     is_digital = Column(Boolean, default=False)
     lang = Column(String, default="en")      # TCGdex language code, NEVER "both"
+    game = Column(String, nullable=False, default="pokemon", server_default=sql_text("'pokemon'"))  # game axis (E3, PicaLens #62)
     updated_at = Column(DateTime, default=func.now())
 
     # Relationship to cards via tcg_set_id (no DB-level FK, joined in Python)
@@ -83,6 +84,7 @@ class Card(Base):
     custom_source_card_id = Column(String, nullable=True, index=True)
     is_digital = Column(Boolean, default=False)
     lang = Column(String, default="en")      # TCGdex language code
+    game = Column(String, nullable=False, default="pokemon", server_default=sql_text("'pokemon'"))  # game axis (E3, PicaLens #62)
     # Cardmarket EUR prices
     price_market = Column(Float)
     price_low = Column(Float)
@@ -250,6 +252,7 @@ class CollectionItem(Base):
     variant = Column(String, nullable=False, default="Normal")  # Normal/Holo/Reverse Holo/First Edition
     purchase_price = Column(Float)
     lang = Column(String, default="en")  # fixed TCGdex card language
+    game = Column(String, nullable=False, default="pokemon", server_default=sql_text("'pokemon'"))  # game axis (E3, PicaLens #62)
     added_at = Column(DateTime, default=func.now())
 
     card = relationship("Card", back_populates="collection_items")
@@ -341,6 +344,34 @@ class PriceHistory(Base):
     card = relationship("Card", back_populates="price_history")
 
     __table_args__ = (UniqueConstraint("card_id", "date", name="uq_price_history_card_date"),)
+
+
+class GamePrice(Base):
+    """One price observation for a print of a non-Pokemon game (E3, PicaLens #62). Append-only.
+
+    Pokemon keeps its prices in the `cards.price_*` columns and `price_history` (Cardmarket EUR, TCGplayer USD),
+    unchanged. Every other game writes here: one row per (game, print, source, finish, day), never updated; the
+    newest `price_date` is the current price. Keyed by print id, not by `cards.id`, because a price exists before
+    anybody owns the card. A row is the source's number as published: `amount` NULL means the source has no price
+    for that finish (never 0).
+    """
+    __tablename__ = "game_prices"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    game = Column(String, nullable=False)
+    print_id = Column(String, nullable=False)       # "en:1-1" (lorcascan scheme); the source's own print, e.g. English
+    source = Column(String, nullable=False)         # "lorcast" (TCGplayer market price, passed through by Lorcast)
+    currency = Column(String, nullable=False)       # "USD"
+    finish = Column(String, nullable=False)         # "normal" | "foil"
+    amount = Column(Float, nullable=True)
+    price_date = Column(Date, nullable=False)       # the day the source file is for (UTC)
+    fetched_at = Column(String, nullable=True)      # ISO time the source file says it was fetched
+    source_file = Column(String, nullable=True)     # file name it was read from (provenance)
+
+    __table_args__ = (
+        UniqueConstraint("game", "print_id", "source", "finish", "price_date", name="uq_game_prices_obs"),
+        Index("ix_game_prices_lookup", "game", "print_id", "finish", "price_date"),
+    )
 
 
 class Binder(Base):
@@ -717,6 +748,7 @@ class ScanJob(Base):
     error_message = Column(Text)
     # en/de hint forwarded to the external card matcher; NULL for LLM jobs.
     session_lang = Column(String, nullable=True)
+    game = Column(String, nullable=False, default="pokemon", server_default=sql_text("'pokemon'"))  # game axis (E3, PicaLens #62)
 
     items = relationship(
         "ScanJobItem",
@@ -821,3 +853,37 @@ class ScannerProviderLimitState(Base):
     blocked_until = Column(DateTime, nullable=True, index=True)
     blocked_reason = Column(String, nullable=True)
     updated_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+# --- game axis: default scope (E3, PicaLens #62) --------------------------------------------------------------------
+# Every ORM SELECT of a game-scoped model is limited to one game. The default is "pokemon", so each existing endpoint,
+# job and test keeps seeing exactly the rows it saw before the `game` column existed, even once rows of another game
+# are in the same tables. A session opts into another game with `session.info["game"] = "lorcana"` (see
+# services/games.py `game_session`); "*" lifts the scope (maintenance only). Not covered on purpose: raw `text()`
+# SQL, Core statements on `__table__`, and ORM bulk UPDATE/DELETE; those are keyed by id or written for Pokemon only.
+from sqlalchemy import event as _sa_event
+from sqlalchemy.orm import Session as _OrmSession, with_loader_criteria as _with_loader_criteria
+
+DEFAULT_GAME = "pokemon"
+GAME_SCOPED_MODELS = (Set, Card, CollectionItem, ScanJob)
+
+
+def _game_criteria(model, game):
+    # the closure variable `game` is tracked by SQLAlchemy's lambda cache as a bound parameter
+    return _with_loader_criteria(model, lambda cls: cls.game == game, include_aliases=True)
+
+
+@_sa_event.listens_for(_OrmSession, "do_orm_execute")
+def _apply_game_scope(execute_state):
+    if (
+        not execute_state.is_select
+        or execute_state.is_column_load
+        or execute_state.is_relationship_load
+    ):
+        return
+    game = execute_state.execution_options.get("game") or execute_state.session.info.get("game", DEFAULT_GAME)
+    if game == "*":
+        return
+    execute_state.statement = execute_state.statement.options(
+        *[_game_criteria(model, game) for model in GAME_SCOPED_MODELS]
+    )

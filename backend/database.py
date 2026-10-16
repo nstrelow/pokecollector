@@ -672,6 +672,28 @@ def _run_migrations(conn):
                 );
             END IF;
         END$$""",
+        # v63: game axis (E3, PicaLens #62). Additive only: a constant default on ADD COLUMN is a catalog change in
+        # PostgreSQL 11+ (no table rewrite, no row is touched), and every existing row reads 'pokemon'. There is
+        # deliberately no CHECK on the value (a third game would need a constraint change); the app validates it.
+        "ALTER TABLE cards ADD COLUMN IF NOT EXISTS game VARCHAR NOT NULL DEFAULT 'pokemon'",
+        "ALTER TABLE sets ADD COLUMN IF NOT EXISTS game VARCHAR NOT NULL DEFAULT 'pokemon'",
+        "ALTER TABLE collection ADD COLUMN IF NOT EXISTS game VARCHAR NOT NULL DEFAULT 'pokemon'",
+        "ALTER TABLE scan_jobs ADD COLUMN IF NOT EXISTS game VARCHAR NOT NULL DEFAULT 'pokemon'",
+        # Non-Pokemon prices: new append-only table (Pokemon prices stay in cards.price_* / price_history).
+        """CREATE TABLE IF NOT EXISTS game_prices (
+            id SERIAL PRIMARY KEY,
+            game VARCHAR NOT NULL,
+            print_id VARCHAR NOT NULL,
+            source VARCHAR NOT NULL,
+            currency VARCHAR NOT NULL,
+            finish VARCHAR NOT NULL,
+            amount DOUBLE PRECISION,
+            price_date DATE NOT NULL,
+            fetched_at VARCHAR,
+            source_file VARCHAR,
+            CONSTRAINT uq_game_prices_obs UNIQUE (game, print_id, source, finish, price_date)
+        )""",
+        "CREATE INDEX IF NOT EXISTS ix_game_prices_lookup ON game_prices(game, print_id, finish, price_date)",
     ]
     for stmt in migrations:
         try:

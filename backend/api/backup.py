@@ -28,7 +28,7 @@ BACKUP_GROUPS = {
         "collection_printing_detail_tags",
     ],
     "users": ["users", "user_settings", "settings", "printing_detail_tags"],
-    "cards": ["cards", "sets", "price_history", "custom_card_matches"],
+    "cards": ["cards", "sets", "price_history", "custom_card_matches", "game_prices"],
     "products": [
         "product_purchases",
         "product_cards",
