@@ -65,6 +65,9 @@ services:
       SCAN_UPLOAD_DIR: /app/data/scan-uploads
       SCAN_TRACE_DIR: ${SCAN_TRACE_DIR:-}
       SCAN_TRACE_STORAGE_DIR: /app/data/scan-traces
+      # Lorcana (E3, PicaLens #62): the /api/lorcana routes exist only when this is true (G2 turns it on).
+      LORCANA_ENABLED: ${LORCANA_ENABLED:-false}
+      LORCANA_PRICES_DIR: /app/data/lorcana-prices
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,6 +81,7 @@ services:
       - ./data/pokedex-images:/app/data/pokedex-images
       - ./data/scan-uploads:/app/data/scan-uploads
       - ./data/scan-traces:/app/data/scan-traces
+      - ./data/lorcana-prices:/app/data/lorcana-prices:ro
     ports:
       - "${BACKEND_PORT:-8000}:8000"
 

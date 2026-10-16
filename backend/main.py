@@ -204,6 +204,12 @@ app.include_router(profile.router, prefix="/api/profile", tags=["profile"])
 app.include_router(github_router, prefix="/api/github", tags=["github"])
 app.include_router(community.router, prefix="/api/community", tags=["community"])
 
+# Lorcana (E3, PicaLens #62): server side only, off unless LORCANA_ENABLED=1 (G2, PicaLens #72, turns it on).
+from services.games import lorcana_enabled
+if lorcana_enabled():
+    from api import lorcana as lorcana_api
+    app.include_router(lorcana_api.router, prefix="/api/lorcana", tags=["lorcana"])
+
 
 @app.get("/api/health")
 def health_check():
