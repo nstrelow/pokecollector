@@ -8,7 +8,7 @@ design in `docs/POKESCANNER-PLAN.md`.
 | Piece | Where | How it's managed | Repo |
 |---|---|---|---|
 | pokescanner service (`pokescan.serve`) | CT 140 `pokescanner`, 10.0.1.40:8000, NixOS, 8 cores / 5 GB (cores 4 -> 8 on 2026-09-29, ORT threads stay 4; memory 3072 -> 4096 on 2026-10-02, 4096 -> 5120 on 2026-10-17 for the second service) | denils (`modules/aspects/features/pokescan-serve.nix`, `hosts/pokescanner.nix`), `nix run .#update-pokescanner` | `/root/denils` |
-| lorcascanner service (`lorcascan.serve`, Lorcana) | CT 140, second unit next to pokescanner, **127.0.0.1:8001 only** since 2026-10-17 (E4 Phase 1, PicaLens#63); LAN bind + `scan.nilss.dev/lorcana/` route prepared, not applied (E4b, #104). Own user `lorcascanner`, `MemoryMax 2560M`, `OOMScoreAdjust 500`, token in agenix `lorcascanner-env` (`LORCASCAN_TOKEN`); bundle **mp4** `/tank/lorcascan/bundle-v5` (ro), source **mp5** `/tank/lorcascan/src` detached at `ac75d32` (ro), prices **mp6** (ro); cardcore is pokescanner's mp3 | denils (`modules/aspects/features/lorcascan-serve.nix`), `nix run .#update-pokescanner` (CT 140 generation **53**, rollback **52**); runbook lorcascan `docs/DEPLOY-CT140.md` | `/root/denils`, lorcascan |
+| lorcascanner service (`lorcascan.serve`, Lorcana) | CT 140, second unit next to pokescanner, **`0.0.0.0:8001`, open to the whole LAN like :8000, since 2026-10-17 (E4b Phase 2, PicaLens#104; Phase 1 was loopback only, PicaLens#63)**; public entry `https://scan.nilss.dev/lorcana/*` (OPNsense Caddy `handle_path`, ForwardAuth, owner-only, no header strip object). Own user `lorcascanner`, `MemoryMax 2560M`, `OOMScoreAdjust 500`, token in agenix `lorcascanner-env` (`LORCASCAN_TOKEN`); bundle **mp4** `/tank/lorcascan/bundle-v5` (ro), source **mp5** `/tank/lorcascan/src` detached at `ac75d32` (ro), prices **mp6** (ro); cardcore is pokescanner's mp3 | denils (`modules/aspects/features/lorcascan-serve.nix`), `nix run .#update-pokescanner` (CT 140 generation **54**, rollback **53**); runbook lorcascan `docs/DEPLOY-CT140.md` | `/root/denils`, lorcascan |
 | pokescan source the service runs | `/tank/pokescan/src` (git checkout of the trunk `master`; **926e1bc since 2026-10-14** (v32), before it `712f08d` (v31) since 2026-10-13, before it `0e02d53` (v30; carries v29) since 2026-10-13; rollback `712f08d`), bind-mounted ro at `/var/lib/pokescanner/src` (mp1) | `git -C /tank/pokescan/src fetch && checkout <rev>`; `pokescanner.path` restarts the unit when files change; bump `commit = "…"` in the nix file (label only) | `nstrelow/pokescan` |
 | model bundle v12 | `/tank/pokescan/bundle-v12` (1.6 GB incl. `ref_thumbs_v12/`), ro at `/var/lib/pokescanner/bundle` | rebuilt with `scripts/export_serve_bundle.py --out <newdir>` from a pokescan worktree; new versions get a NEW dir, then change `bundleDir` in the nix file | pokescan |
 | model bundle v12p3 (historical) | `/tank/pokescan/bundle-v12p3` (1.98 GB: v12 + `client/` towers fp16 172.9 MB / fp32 345.1 MB / int8wo 87.8 MB + unet 0.6 MB; bundle sha 0fac0cf6b1b1) | CT 140 mp0 2026-09-29 evening → 2026-09-30, then the v14 rollback bundle (historical; current rollback: d43e4cc + bundle-v22); the page picks the tower per device (WebGPU+shader-f16 → fp16, WebGPU → fp32, else int8wo). Its rollback then was mp0 → bundle-v12p2 (+ `pct reboot 140`) | pokescan |
@@ -43,7 +43,7 @@ design in `docs/POKESCANNER-PLAN.md`.
 
 **scan.nilss.dev is owner-only since 2026-09-30** (owner's decision). Two layers:
 
-1. **Caddy + Authentik:** every path on `scan.nilss.dev` (the `/live*`, `/collection/*` and
+1. **Caddy + Authentik:** every path on `scan.nilss.dev` (the `/live*`, `/collection/*`, `/lorcana/*` and
    catch-all handles) has forward-auth; only `/outpost.goauthentik.io/*` is open (the
    outpost callback). The Authentik app `pokescan-live` is bound to the owner's user only.
 2. **The service (introduced in pokescan ddb93b8; live: 78dc0f0):**
@@ -550,10 +550,15 @@ Mount slots now: mp0 bundle-v32, mp1 src, mp2 cardapp, mp3 cardcore, **mp4 lorca
 The service refuses to start without a token (`ExecStartPre`), `/health` must show `auth_required true` and an unauthenticated `/identify` must answer 401 (both are hard stops in the runbook).
 Safety run on CT 140's nix interpreter (onnxruntime 1.24.4 / opencv 4.13 / numpy 2.4 against the gate venvs' 1.31 / 5.0 / 2.5): full T9f **0 of 3,083** negatives IDENTIFIED, full gate PASS (every non-negotiable row 0);
 5 of 3,933 decisions differ, all at the margin edge, none in negatives. `config_sha256` / `decide_fingerprint` do not cover interpreter versions: re-gate after any nixpkgs bump of those three (`nix flake update` is one).
-**Not exposed:** no port in the CT firewall, no Caddy route. **Phase 2 (E4b, #104, prepared, not applied):** denils `lorcascan-lan` (bind `0.0.0.0`, 8001 from 10.0.0.1 and 10.0.1.1 only), OPNsense handle
-`handle_path /lorcana/*` -> 10.0.1.40:8001 with ForwardAuth=1 and no strip header, pokescan `lorcana-forwardauth` (`opnsense_forwardauth.py` keeps that handle SSO-only); steps and rollback in lorcascan
-`docs/DEPLOY-CT140.md` "Phase 2". Behind Caddy lorcascanner trusts `X-Authentik-Username: nils` from 10.0.0.1 exactly like pokescanner, so the page needs no bearer there.
-**Rollback (Lorcana only):** `pct exec 140 -- /run/current-system/sw/bin/systemctl stop lorcascanner` (not `disable`: NixOS units live in the store; it starts again on reboot); lasting: CT 140 generation 52 plus `nix-env -p /nix/var/nix/profiles/system --switch-generation 52`.
+**Phase 2 DEPLOYED 2026-10-17** (owner yes, PicaLens#104 E4b; owner chose "Whole LAN, like Pokémon" for the firewall): denils `lorcascan-lan` (`9953395`, `6e88abc`) merged as `57e106c`, `nix run .#update-pokescanner` -> CT 140 **generation 54, rollback 53**
+(`ssh root@10.0.1.40 /nix/var/nix/profiles/system-53-link/bin/switch-to-configuration switch`, then `nix-env -p /nix/var/nix/profiles/system --switch-generation 53`). Bind `0.0.0.0` (IPv4 only), `networking.firewall.allowedTCPPorts = [ 22 8000 8001 ]`; pokescanner not restarted (MainPID 2497 unchanged).
+**Public entry:** OPNsense Caddy handle `9580f512-a5ac-46ea-96dc-897ebf114b26`, `handle_path /lorcana/*` -> 10.0.1.40:8001 (prefix stripped), ForwardAuth=1, no strip header object, placed before the catch-all (checked in the generated Caddyfile and with `caddy adapt`). pokescan `lorcana-forwardauth` merged into master as `ca62278`;
+`/root/pokescan_forwardauth.py` on OPNsense is that version, `status` shows live, rest, collection and lorcana `ok`. Backups on OPNsense: `/conf/config.xml.bak-lorcana-20261017-083349`, `/root/pokescan_forwardauth.py.bak-pre-lorcana-20261017-083349`, `/usr/local/etc/caddy/Caddyfile.bak-pre-lorcana-20261017-083349`.
+On this OPNsense `configctl template reload OPNsense/Caddy` does not rewrite `/usr/local/etc/caddy/Caddyfile`; `pluginctl -c caddy_sync` (also run by `configctl caddy reload`) does. Behind Caddy lorcascanner trusts `X-Authentik-Username: nils` from 10.0.0.1 exactly like pokescanner, so the page needs no bearer there;
+a direct LAN peer still needs the bearer for `/identify`.
+**Route rollback (instant):** `ssh root@10.0.0.1 'cp -p /conf/config.xml.bak-lorcana-20261017-083349 /conf/config.xml && /usr/local/sbin/pluginctl -c caddy_sync && configctl caddy reload'` and `ssh root@10.0.0.1 cp -p /root/pokescan_forwardauth.py.bak-pre-lorcana-20261017-083349 /root/pokescan_forwardauth.py`
+(OPNsense's login shell is csh: wrap compound commands in `sh -c`). Details: lorcascan `docs/DEPLOY-CT140.md` "Phase 2 - done".
+**Rollback (Lorcana only):** `pct exec 140 -- /run/current-system/sw/bin/systemctl stop lorcascanner` (not `disable`: NixOS units live in the store; it starts again on reboot); lasting: remove the route first, then CT 140 generation 53 (loopback bind, no 8001 rule) plus `nix-env -p /nix/var/nix/profiles/system --switch-generation 53`.
 
 **denils label sync — 2026-10-04 ~15:00 Berlin** (owner yes 2026-10-04, PicaLens #4): denils `5305914` sets
 `commit = "78dc0f0"` in `pokescan-serve.nix` and names bundle-v24 in its comments and in the `pct set 140 -mp0`
@@ -569,7 +574,7 @@ Smoke test: health 78dc0f0 / v22 / 161c5780d77a / 90; LAN `/identify` no / wrong
 `/hint`, forged `X-Authentik-Username` → 302 to auth.nilss.dev.
 
 **Change SSO scope** (which paths need login; for `/live*` + the catch-all use `/root/pokescan_forwardauth.py`,
-which also switches the `X-Authentik-*` strip): edit the `ForwardAuth` flag on the
+which also switches the `X-Authentik-*` strip; `/collection/*` and `/lorcana/*` are always-SSO there and `off` never opens them): edit the `ForwardAuth` flag on the
 `scan.nilss.dev` handles in `/conf/config.xml` (script pattern: python + `ET`, never sed on
 OPNsense's csh), then the two `configctl` commands. `/outpost.goauthentik.io/*` must stay
 routed to 10.0.1.10:9000 without forward-auth or logins loop.
