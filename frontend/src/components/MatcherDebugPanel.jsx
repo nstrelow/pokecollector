@@ -202,7 +202,7 @@ function TimingsBar({ timings, t }) {
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-text-secondary">
         {segments.map((segment, index) => (
           <span key={segment.key} className="inline-flex items-center gap-1">
-            <span className="h-2 w-2 rounded-sm" style={{ background: colorOf(segment, index) }} />
+            <span className="h-2 w-2 rounded-xs" style={{ background: colorOf(segment, index) }} />
             {labelOf(segment)} <span className="font-mono">{Math.round(segment.ms)}</span>
           </span>
         ))}
