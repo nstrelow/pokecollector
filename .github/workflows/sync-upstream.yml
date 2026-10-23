@@ -1,0 +1,92 @@
+# Fork-only (nstrelow/pokecollector): keeps `main` an exact mirror of
+# Git-Romer/pokecollector and merges it into `deploy`, which Komodo builds.
+# A merge that conflicts or fails the tests is not pushed; it becomes a
+# main -> deploy PR to resolve by hand.
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: '23 3 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: deploy
+          fetch-depth: 0
+          # SYNC_TOKEN: fine-grained PAT (contents, workflows, pull requests: read/write).
+          # The default GITHUB_TOKEN cannot push upstream's .github/workflows changes.
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Fast-forward main to upstream
+        run: |
+          git remote add upstream https://github.com/Git-Romer/pokecollector.git
+          git fetch upstream main
+          # Plain push: refuses anything but a fast-forward, so main never diverges silently.
+          git push origin upstream/main:refs/heads/main
+
+      - name: Merge main into deploy
+        id: merge
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "deploy already contains upstream/main"
+            echo "result=current" >> "$GITHUB_OUTPUT"
+          elif git merge --no-edit -m "Merge upstream v$(git show upstream/main:VERSION)" upstream/main; then
+            echo "result=merged" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort
+            echo "result=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.merge.outputs.result == 'merged'
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - uses: actions/setup-node@v4
+        if: steps.merge.outputs.result == 'merged'
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Test merged tree
+        id: test
+        if: steps.merge.outputs.result == 'merged'
+        continue-on-error: true
+        run: |
+          pip install -q -r backend/requirements.txt pytest
+          (cd backend && python -m pytest -q)
+          (cd frontend && npm ci --no-audit --no-fund && npm test && npm run build)
+
+      - name: Push deploy
+        if: steps.merge.outputs.result == 'merged' && steps.test.outcome == 'success'
+        run: git push origin HEAD:deploy
+
+      - name: Open main -> deploy PR
+        if: steps.merge.outputs.result == 'conflict' || steps.test.outcome == 'failure'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          REASON: ${{ steps.merge.outputs.result == 'conflict' && 'conflicts' || 'fails the tests' }}
+        run: |
+          if [ -n "$(gh pr list --base deploy --head main --state open --json number -q '.[].number')" ]; then
+            echo "main -> deploy PR already open"
+          else
+            gh pr create --base deploy --head main \
+              --title "Merge upstream v$(git show upstream/main:VERSION) into deploy" \
+              --body "Automatic merge of upstream into deploy $REASON. Resolve it locally (git merge main on deploy), then push deploy. Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+          exit 1
