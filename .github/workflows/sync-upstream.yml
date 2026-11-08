@@ -1,5 +1,6 @@
 # Fork-only (nstrelow/pokecollector): keeps `main` an exact mirror of
-# Git-Romer/pokecollector and merges it into `deploy`, which Komodo builds.
+# Git-Romer/pokecollector and merges it into `deploy`, which Coolify builds
+# (docker-compose.coolify.yml) and redeploys on push.
 # A merge that conflicts or fails the tests is not pushed; it becomes a
 # main -> deploy PR to resolve by hand.
 name: Sync upstream
@@ -68,7 +69,8 @@ jobs:
         if: steps.merge.outputs.result == 'merged'
         continue-on-error: true
         run: |
-          pip install -q -r backend/requirements.txt pytest
+          pip install -q -r backend/requirements.txt pytest pyyaml
+          python scripts/check-coolify-compose.py
           (cd backend && python -m pytest -q)
           (cd frontend && npm ci --no-audit --no-fund && npm test && npm run build)
 
