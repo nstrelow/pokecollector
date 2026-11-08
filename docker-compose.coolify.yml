@@ -1,0 +1,94 @@
+# Fork-only (nstrelow/pokecollector): the stack Coolify deploys from `deploy`.
+# Coolify takes a single compose file, so this is docker-compose.yml with the
+# build overrides of docker-compose.build.yml and the timezone pin folded in.
+# Host ports, secrets and build args come from the Coolify app's environment.
+# Keep the backend environment in step with docker-compose.yml:
+# scripts/check-coolify-compose.py fails the nightly sync when they diverge.
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: pokemon
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: pokemon_tcg
+      TZ: Europe/Berlin
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pokemon -d pokemon_tcg"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://pokemon:${POSTGRES_PASSWORD}@postgres:5432/pokemon_tcg
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      USER_MODE: ${USER_MODE:-}
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-flash-latest}
+      GEMINI_ALLOWED_MODELS: ${GEMINI_ALLOWED_MODELS:-}
+      OPENAI_SCANNER_ENABLED: ${OPENAI_SCANNER_ENABLED:-false}
+      OPENAI_PROVIDER_LABEL: ${OPENAI_PROVIDER_LABEL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.6-luna}
+      OPENAI_ALLOWED_MODELS: ${OPENAI_ALLOWED_MODELS:-}
+      OPENAI_API_KEY_REQUIRED: ${OPENAI_API_KEY_REQUIRED:-}
+      EXTERNAL_MATCHER_URL: ${EXTERNAL_MATCHER_URL:-}
+      EXTERNAL_MATCHER_TOKEN: ${EXTERNAL_MATCHER_TOKEN:-}
+      EXTERNAL_MATCHER_LABEL: ${EXTERNAL_MATCHER_LABEL:-pokescan}
+      EXTERNAL_MATCHER_TIMEOUT: ${EXTERNAL_MATCHER_TIMEOUT:-20}
+      TCGDEX_SYNC_LANGUAGES: ${TCGDEX_SYNC_LANGUAGES:-en,de}
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      PRE_UPGRADE_BACKUP_ENABLED: ${PRE_UPGRADE_BACKUP_ENABLED:-true}
+      PRE_UPGRADE_BACKUP_REQUIRED: ${PRE_UPGRADE_BACKUP_REQUIRED:-true}
+      PRE_UPGRADE_BACKUP_KEEP: ${PRE_UPGRADE_BACKUP_KEEP:-10}
+      POKEDEX_IMAGE_CACHE_DIR: /app/data/pokedex-images
+      SCAN_UPLOAD_DIR: /app/data/scan-uploads
+      SCAN_TRACE_DIR: ${SCAN_TRACE_DIR:-}
+      SCAN_TRACE_STORAGE_DIR: /app/data/scan-traces
+      LORCANA_ENABLED: ${LORCANA_ENABLED:-false}
+      LORCANA_PRICES_DIR: /app/data/lorcana-prices
+      TZ: Europe/Berlin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Relative binds live under Coolify's application directory and survive redeploys.
+      - ./backups:/app/backups
+      - ./data/auth:/app/data/auth
+      - ./data/pokedex-images:/app/data/pokedex-images
+      - ./data/scan-uploads:/app/data/scan-uploads
+      - ./data/scan-traces:/app/data/scan-traces
+      - ./data/lorcana-prices:/app/data/lorcana-prices:ro
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        VITE_LIVE_SCANNER_URL: ${LIVE_SCANNER_URL:-}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      PUBLIC_MODE: ${PUBLIC_MODE:-false}
+      TZ: Europe/Berlin
+    ports:
+      - "${FRONTEND_PORT:-3000}:80"
+
+volumes:
+  postgres_data:
