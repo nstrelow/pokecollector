@@ -23,7 +23,7 @@ design in `docs/POKESCANNER-PLAN.md`.
 | service secrets | denils `secrets/pokescanner-env.age` → `/run/agenix/pokescanner-env` (root 0400, read by systemd `EnvironmentFile`) | keys: `POKESCANNER_TOKEN` (API bearer, rotated 2026-10-04 `c5651ea`), `POKESCANNER_COLLECTION_USERNAME/PASSWORD` (pokecollector user `pokescanner`) | denils |
 | traces | CT 140 `/var/lib/pokescanner/traces/` (local disk, NOT backed up); one dir per `debug=1` identify: `trace.json` (full top-k, geometry), `source.jpg`, `plane.webp`, `overlay.webp` (~120–760 KB); no-card states keep only json + small overlay | swept by the service at startup + hourly: `POKESCANNER_TRACE_KEEP_DAYS` (90) then `POKESCANNER_TRACE_MAX_GB` (10), oldest first — knobs in `pokescan-serve.nix` (`traceKeepDays`, `traceMaxGb`) | pokescan `serve/app.py` `sweep_traces` |
 | CT 140 rootfs | `pool/subvol-140-disk-0`, **20 GB** since 2026-09-29 (was 8) | grow with `pct resize 140 rootfs <N>G` (online), then set `proxmox.disk` in `hosts/pokescanner.nix` and run a tofu `apply -refresh-only` in `~/.local/share/den-lxc/pokescanner` so `check-drift` is clean (never `provision-*`) | denils |
-| pokecollector (fork branch `pokescanner`, live `1dbcaca` since 2026-10-04) | CT 100 `alpine-komodo`, docker stack `/etc/komodo/stacks/pokecollector`, https://poke.nilss.dev | by hand (see below) — NOT via Komodo | `nstrelow/pokecollector` |
+| pokecollector (fork branch `deploy`, on Coolify since 2026-11-08) | CT 103 Coolify app `pokecollector` (`zptylz6x97wpi2ndbvpdf5ul`, `docker-compose.coolify.yml`), frontend 10.0.1.3:3001 = https://poke.nilss.dev, backend 10.0.1.3:8001; data under `/data/coolify/applications/<uuid>/` | push to `deploy` → GitHub webhook → Coolify rebuilds (see below) | `nstrelow/pokecollector` |
 | public entry | OPNsense Caddy: `scan.nilss.dev` → 10.0.1.40:8000; `poke.nilss.dev` → 10.0.1.10:3000 | `/conf/config.xml` `<reverseproxy>` (subdomain `158ae50d…` + 4 handles, **all three scanner handles with ForwardAuth since 2026-09-30**), `configctl template reload OPNsense/Caddy && configctl caddy reload` | — |
 | SSO | Authentik on CT 100: ProxyProvider "pokescan live" (forward-auth single app), app `pokescan-live`, embedded outpost (`authentik_host` = https://auth.nilss.dev); **owner-only** (see "Owner-only lockdown") | UI, or `docker exec authentik-server-1 ak shell -c '…'` | — |
 | monitoring | Gatus "Pokescanner" (vigil) → `/health` every 5 min; homepage tile (arr) | emitted by the denils feature aspect; `update-vigil` / `update-arr` after changes | denils |
@@ -236,23 +236,26 @@ grep -E '^  (builder|pokescanner) = "' secrets.nix | sed -E 's/^  [a-z]+ = "([^"
 nix run nixpkgs#age -- -R /tmp/recip -o secrets/pokescanner-env.age /tmp/env.plain
 git commit -am "pokescanner: rotate token" && git push && nix run .#update-pokescanner
 ssh root@10.0.1.40 systemctl restart pokescanner        # a secret+unit switch can restart on the old unit
-# then on CT 100: edit EXTERNAL_MATCHER_TOKEN in /etc/komodo/stacks/pokecollector/.env and
-pct exec 100 -- sh -c 'cd /etc/komodo/stacks/pokecollector && docker compose -p pokecollector -f docker-compose.yml -f docker-compose.build.yml -f compose.tz.yml up -d backend'
+# then in Coolify (app pokecollector → Environment Variables): set EXTERNAL_MATCHER_TOKEN and redeploy
 rm /tmp/env.plain /tmp/recip
 ```
 Then clear `pokescan.token` from the phone's localStorage (or open `/live?token=<new>`).
 
-**Deploy a new pokecollector build** (branch `pokescanner`):
+**Deploy a new pokecollector build** (branch `deploy`, since 2026-11-08 on Coolify, CT 103): push to
+`deploy`. The repo's GitHub webhook (push events → `https://hooks.nilss.dev/webhooks/source/github/events/manual`)
+makes Coolify rebuild `docker-compose.coolify.yml` and recreate the stack; the nightly upstream sync deploys
+the same way. Manual redeploy: Coolify UI, or
 ```
-git -C /srv/repos/PicaLens/collection/pokecollector archive --format=tar.gz -o /tmp/pc.tgz fork/pokescanner
-pct push 100 /tmp/pc.tgz /tmp/pc.tgz
-pct exec 100 -- sh -c 'cd /etc/komodo/stacks/pokecollector && docker tag pokecollector-backend:local pokecollector-backend:prev && docker tag pokecollector-frontend:local pokecollector-frontend:prev && rm -rf backend frontend && tar xzf /tmp/pc.tgz && docker compose -p pokecollector -f docker-compose.yml -f docker-compose.build.yml -f compose.tz.yml build && docker compose -p pokecollector -f docker-compose.yml -f docker-compose.build.yml -f compose.tz.yml up -d'
+. /root/.config/coolify/env
+curl -sS -X POST -H "Authorization: Bearer $COOLIFY_API_TOKEN" -H 'Content-Type: application/json' \
+  "$COOLIFY_URL/api/v1/deploy" -d '{"uuid":"zptylz6x97wpi2ndbvpdf5ul"}'
 curl -s https://poke.nilss.dev/api/health
 ```
-Never redeploy/pull this stack from Komodo: its `file_paths` lack `docker-compose.build.yml`,
-so it would pull upstream's ghcr 1.51.0 images (no external matcher). Fix in Mongo per
-`memory/host.md` if you want Komodo to match. If `docker` commands fail on CT 100, the daemon
-is stopped again: `pct exec 100 -- rc-service docker start` (containers survive via live-restore).
+`docker-compose.coolify.yml` is a single-file copy of `docker-compose.yml` (Coolify takes one file);
+`scripts/check-coolify-compose.py` fails the nightly sync when upstream's compose changes, then port the change.
+
+Everything below that names CT 100 / `/etc/komodo/stacks/pokecollector` is the pre-Coolify history (stack
+stopped 2026-11-08, kept as rollback; cutover dump `/root/pokecollector-cutover.dump` on CT 100 and CT 103).
 
 A frontend-only change (no `backend/` diff) can build and recreate just the frontend:
 `... build frontend` then `... up -d --no-deps --no-build frontend`; the backend container keeps running.
